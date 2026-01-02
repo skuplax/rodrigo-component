@@ -5,13 +5,18 @@ import asyncio
 import logging
 
 from gpio import JukeboxState, GPIOMonitor
+from player import PlayerService
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Global state and monitor
+# Set GPIO Monitor logger to WARNING level
+logging.getLogger("gpio").setLevel(logging.WARNING)
+
+# Global state, player service, and monitor
 jukebox_state = JukeboxState()
+player_service: Optional[PlayerService] = None
 gpio_monitor: Optional[GPIOMonitor] = None
 
 
@@ -19,18 +24,35 @@ gpio_monitor: Optional[GPIOMonitor] = None
 async def lifespan(app: FastAPI):
     """Manage application lifespan - startup and shutdown"""
     # Startup
-    global gpio_monitor
+    global player_service, gpio_monitor
     logger.info("Starting Rodrigo Component...")
-    gpio_monitor = GPIOMonitor(jukebox_state)
+    
+    # Initialize player service (includes MopidyThread, but not started yet)
+    # Sources default to SourceManager defaults if not provided
+    player_service = PlayerService(jukebox_state)
+    
+    # Start Mopidy thread
+    player_service.start()
+    
+    # Initialize GPIO monitor with player service
+    gpio_monitor = GPIOMonitor(jukebox_state, player_service)
     gpio_monitor.start()
+    
     logger.info("Rodrigo Component started successfully")
     
     yield
     
     # Shutdown
     logger.info("Shutting down Rodrigo Component...")
+    
+    # Stop GPIO monitor
     if gpio_monitor:
         gpio_monitor.stop()
+    
+    # Stop Mopidy thread
+    if player_service:
+        player_service.stop()
+    
     logger.info("Rodrigo Component stopped")
 
 

@@ -2,6 +2,7 @@
 
 from gpiozero import Button
 import logging
+from typing import Optional
 
 from gpio.state import JukeboxState
 
@@ -11,9 +12,18 @@ logger = logging.getLogger(__name__)
 class GPIOMonitor:
     """GPIO button monitor with event callbacks"""
     
-    def __init__(self, state: JukeboxState):
+    def __init__(self, state: JukeboxState, player_service: Optional[object] = None):
+        """
+        Initialize GPIO monitor
+        
+        Args:
+            state: JukeboxState instance
+            player_service: PlayerService instance for triggering playback actions
+        """
         self.state = state
+        self.player_service = player_service
         self.buttons = {}
+        self.pin_to_action = {}  # Map pin to action for release events
         self.running = False
         
         # Button configuration
@@ -27,7 +37,8 @@ class GPIOMonitor:
         # Initialize buttons
         try:
             for pin, config in button_config.items():
-                btn = Button(pin, pull_up=True, bounce_time=0.1)
+                self.pin_to_action[pin] = config["action"]
+                btn = Button(pin, pull_up=True, bounce_time=0.01)
                 btn.when_pressed = lambda p=pin, a=config["action"], n=config["name"]: self._handle_press(p, a, n)
                 btn.when_released = lambda p=pin: self._handle_release(p)
                 self.buttons[pin] = btn
@@ -38,24 +49,31 @@ class GPIOMonitor:
             self.buttons = {}
     
     def _handle_press(self, pin: int, action: str, name: str):
-        """Handle button press event"""
+        """Handle button press event - immediate state update for instant feedback"""
         self.state.add_event(pin, "pressed", action)
         
-        # Execute action
+        # Update state immediately for instant user feedback
         if action == "toggle_play":
             self.state.toggle_play()
         elif action == "cycle_source":
             self.state.cycle_source()
-        elif action == "previous":
-            # TODO: Implement previous track logic
-            logger.info("Previous track action triggered")
-        elif action == "next":
-            # TODO: Implement next track logic
-            logger.info("Next track action triggered")
+        # Note: next/previous don't update state on press, only on release
     
     def _handle_release(self, pin: int):
-        """Handle button release event"""
-        self.state.add_event(pin, "released", "")
+        """Handle button release event - trigger player service action"""
+        action = self.pin_to_action.get(pin)
+        self.state.add_event(pin, "released", action or "")
+        
+        # Trigger player service action on release (non-blocking signal)
+        if self.player_service and action:
+            if action == "toggle_play":
+                self.player_service.toggle_play()
+            elif action == "next":
+                self.player_service.next()
+            elif action == "previous":
+                self.player_service.previous()
+            elif action == "cycle_source":
+                self.player_service.cycle_source()
     
     def start(self):
         """Start GPIO monitoring"""
