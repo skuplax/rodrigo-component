@@ -23,6 +23,8 @@ class CommandType(Enum):
     PREVIOUS = "previous"
     STOP = "stop"
     LOAD_PLAYLIST = "load_playlist"
+    GET_VOLUME = "get_volume"
+    SET_VOLUME = "set_volume"
     SHUTDOWN = "shutdown"
 
 
@@ -63,6 +65,12 @@ class MopidyThread(threading.Thread):
         
         # Track last state poll time
         self.last_poll_time = 0.0
+        
+        # Volume result queue for synchronous get_volume calls
+        self._volume_result_queue = queue.Queue()
+        
+        # Lock for thread-safe client access
+        self._client_lock = threading.Lock()
         
         logger.info(f"MopidyThread initialized (host={host}, port={port})")
     
@@ -151,45 +159,61 @@ class MopidyThread(threading.Thread):
     
     def _process_command(self, command: Command):
         """Process a command from the queue"""
-        if not self.connected or not self.client:
+        if not self.connected:
             logger.warning(f"Cannot process command {command.type.value}: not connected")
             return
         
         try:
-            if command.type == CommandType.PLAY:
-                self.client.play()
-            elif command.type == CommandType.PAUSE:
-                self.client.pause()
-            elif command.type == CommandType.TOGGLE:
-                # Query actual Mopidy state and toggle accordingly
-                playback_state = self.client.get_playback_state()
-                if playback_state == "play":
+            # Use lock when accessing client
+            with self._client_lock:
+                if not self.client:
+                    logger.warning(f"Cannot process command {command.type.value}: client not available")
+                    return
+                
+                if command.type == CommandType.PLAY:
+                    self.client.play()
+                elif command.type == CommandType.PAUSE:
                     self.client.pause()
-                    logger.debug("MopidyThread: Toggled from play to pause")
-                elif playback_state == "pause":
-                    self.client.play()
-                    logger.debug("MopidyThread: Toggled from pause to play")
+                elif command.type == CommandType.TOGGLE:
+                    # Query actual Mopidy state and toggle accordingly
+                    playback_state = self.client.get_playback_state()
+                    if playback_state == "play":
+                        self.client.pause()
+                        logger.debug("MopidyThread: Toggled from play to pause")
+                    elif playback_state == "pause":
+                        self.client.play()
+                        logger.debug("MopidyThread: Toggled from pause to play")
+                    else:
+                        # If stopped, start playing
+                        self.client.play()
+                        logger.debug("MopidyThread: Toggled from stop to play")
+                elif command.type == CommandType.NEXT:
+                    self.client.next()
+                elif command.type == CommandType.PREVIOUS:
+                    self.client.previous()
+                elif command.type == CommandType.STOP:
+                    self.client.stop()
+                elif command.type == CommandType.LOAD_PLAYLIST:
+                    playlist_uri = command.data.get("playlist_uri") if command.data else None
+                    shuffle = command.data.get("shuffle", True) if command.data else True
+                    if playlist_uri:
+                        self.client.load_playlist(playlist_uri, shuffle)
+                    else:
+                        logger.warning("LoadPlaylistCommand missing playlist_uri")
+                elif command.type == CommandType.GET_VOLUME:
+                    volume = self.client.get_volume()
+                    # Put result in queue for synchronous callers (outside lock to avoid deadlock)
+                    self._volume_result_queue.put(volume)
+                elif command.type == CommandType.SET_VOLUME:
+                    volume = command.data.get("volume") if command.data else None
+                    if volume is not None:
+                        self.client.set_volume(volume)
+                    else:
+                        logger.warning("SetVolume command missing volume parameter")
+                elif command.type == CommandType.SHUTDOWN:
+                    self.running = False
                 else:
-                    # If stopped, start playing
-                    self.client.play()
-                    logger.debug("MopidyThread: Toggled from stop to play")
-            elif command.type == CommandType.NEXT:
-                self.client.next()
-            elif command.type == CommandType.PREVIOUS:
-                self.client.previous()
-            elif command.type == CommandType.STOP:
-                self.client.stop()
-            elif command.type == CommandType.LOAD_PLAYLIST:
-                playlist_uri = command.data.get("playlist_uri") if command.data else None
-                shuffle = command.data.get("shuffle", True) if command.data else True
-                if playlist_uri:
-                    self.client.load_playlist(playlist_uri, shuffle)
-                else:
-                    logger.warning("LoadPlaylistCommand missing playlist_uri")
-            elif command.type == CommandType.SHUTDOWN:
-                self.running = False
-            else:
-                logger.warning(f"Unknown command type: {command.type}")
+                    logger.warning(f"Unknown command type: {command.type}")
         except Exception as e:
             logger.error(f"Error processing command {command.type.value}: {e}")
             # Mark as disconnected to trigger reconnection
@@ -197,13 +221,18 @@ class MopidyThread(threading.Thread):
     
     def _poll_state(self):
         """Poll Mopidy state and update JukeboxState"""
-        if not self.connected or not self.client:
+        if not self.connected:
             return
         
         try:
-            # Get playback state
-            playback_state = self.client.get_playback_state()
-            current_track = self.client.get_current_track()
+            # Use lock when accessing client
+            with self._client_lock:
+                if not self.client:
+                    return
+                
+                # Get playback state
+                playback_state = self.client.get_playback_state()
+                current_track = self.client.get_current_track()
             
             # Update JukeboxState (thread-safe via lock)
             with self.state.lock:
@@ -229,6 +258,66 @@ class MopidyThread(threading.Thread):
             self.command_queue.put_nowait(command)
         except queue.Full:
             logger.warning("Command queue full, dropping command")
+    
+    def get_volume(self, timeout: float = 2.0) -> Optional[int]:
+        """
+        Get current volume synchronously (blocking call)
+        
+        Args:
+            timeout: Maximum time to wait for result in seconds
+            
+        Returns:
+            Volume level (0-100) or -1 if disabled, or None if error/timeout
+        """
+        if not self.connected:
+            logger.debug("MopidyThread: Cannot get volume, not connected")
+            return None
+        
+        try:
+            # Send command
+            self.send_command(Command(CommandType.GET_VOLUME))
+            
+            # Wait for result
+            volume = self._volume_result_queue.get(timeout=timeout)
+            return volume
+        except queue.Empty:
+            logger.warning("MopidyThread: get_volume timed out")
+            return None
+        except Exception as e:
+            logger.error(f"MopidyThread: get_volume error: {e}")
+            return None
+    
+    def set_volume_sync(self, volume: int, timeout: float = 1.0) -> bool:
+        """
+        Set volume synchronously (blocking call that waits for completion)
+        
+        Args:
+            volume: Volume level (0-100)
+            timeout: Maximum time to wait in seconds (not really used, but kept for API consistency)
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.connected:
+            logger.debug("MopidyThread: Cannot set volume, not connected")
+            return False
+        
+        try:
+            # Clamp volume to valid range
+            volume = max(0, min(100, volume))
+            
+            # Use lock to safely access client from outside the thread
+            with self._client_lock:
+                if not self.client:
+                    logger.debug("MopidyThread: Cannot set volume, client not available")
+                    return False
+                
+                # Set volume directly on client (synchronous)
+                self.client.set_volume(volume)
+                return True
+        except Exception as e:
+            logger.error(f"MopidyThread: set_volume_sync error: {e}")
+            return False
     
     def stop_thread(self):
         """Stop the thread gracefully"""

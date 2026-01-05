@@ -6,8 +6,6 @@ import subprocess
 import json
 import logging
 import time
-import urllib.request
-import xml.etree.ElementTree as ET
 import re
 from typing import Optional, List, Set
 from pathlib import Path
@@ -183,47 +181,53 @@ class YouTubeThread(threading.Thread):
         return None
     
     def _get_channel_videos(self, channel_url: str, max_videos: int = 50) -> List[dict]:
-        """Get list of videos from a YouTube channel using RSS feed"""
+        """Get list of videos from a YouTube channel using yt-dlp"""
         try:
-            # Get channel ID
-            channel_id = self._get_channel_id(channel_url)
-            if not channel_id:
-                logger.error(f"Could not extract channel ID from: {channel_url}")
-                return []
+            # Normalize channel URL (fix double @ if present)
+            normalized_url = channel_url.replace('@@', '@')
             
-            # Fetch RSS feed
-            rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
-            logger.debug(f"Fetching RSS feed from: {rss_url}")
+            # Use yt-dlp to get channel videos
+            # Format: %(id)s|%(title)s|%(url)s
+            cmd = [
+                'yt-dlp',
+                '--flat-playlist',
+                '--print', '%(id)s|%(title)s|%(url)s',
+                '--playlist-end', str(max_videos),
+                normalized_url
+            ]
             
-            with urllib.request.urlopen(rss_url, timeout=10) as response:
-                rss_data = response.read()
+            logger.debug(f"Fetching videos from channel: {normalized_url}")
             
-            # Parse RSS XML
-            root = ET.fromstring(rss_data)
-            
-            # Namespace for YouTube RSS
-            ns = {'yt': 'http://www.youtube.com/xml/schemas/2015',
-                  'media': 'http://search.yahoo.com/mrss/',
-                  'atom': 'http://www.w3.org/2005/Atom'}
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=30
+            )
             
             videos = []
-            entries = root.findall('atom:entry', ns)
-            
-            for entry in entries[:max_videos]:
+            for line in result.stdout.strip().split('\n'):
+                if not line.strip():
+                    continue
+                
                 try:
-                    # Get video ID from yt:videoId
-                    video_id_elem = entry.find('yt:videoId', ns)
-                    if video_id_elem is None:
-                        continue
-                    video_id = video_id_elem.text
-                    
-                    # Get title
-                    title_elem = entry.find('atom:title', ns)
-                    title = title_elem.text if title_elem is not None else "Unknown"
-                    
-                    # Get video URL
-                    link_elem = entry.find('atom:link', ns)
-                    video_url = link_elem.get('href') if link_elem is not None else f"https://www.youtube.com/watch?v={video_id}"
+                    # Parse format: video_id|title|url
+                    parts = line.split('|', 2)
+                    if len(parts) >= 3:
+                        video_id = parts[0].strip()
+                        title = parts[1].strip()
+                        video_url = parts[2].strip()
+                    elif len(parts) == 2:
+                        # Fallback if URL is missing
+                        video_id = parts[0].strip()
+                        title = parts[1].strip()
+                        video_url = f"https://www.youtube.com/watch?v={video_id}"
+                    else:
+                        # Just video ID
+                        video_id = parts[0].strip()
+                        title = "Unknown"
+                        video_url = f"https://www.youtube.com/watch?v={video_id}"
                     
                     videos.append({
                         'id': video_id,
@@ -231,17 +235,17 @@ class YouTubeThread(threading.Thread):
                         'url': video_url
                     })
                 except Exception as e:
-                    logger.warning(f"Error parsing video entry: {e}")
+                    logger.warning(f"Error parsing video line '{line}': {e}")
                     continue
             
-            logger.info(f"Fetched {len(videos)} videos from channel via RSS")
+            logger.info(f"Fetched {len(videos)} videos from channel via yt-dlp")
             return videos
             
-        except urllib.error.URLError as e:
-            logger.error(f"Failed to fetch RSS feed: {e}")
+        except subprocess.TimeoutExpired:
+            logger.error("yt-dlp command timed out while fetching channel videos")
             return []
-        except ET.ParseError as e:
-            logger.error(f"Failed to parse RSS feed: {e}")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to fetch channel videos: {e.stderr}")
             return []
         except Exception as e:
             logger.error(f"Error fetching channel videos: {e}")

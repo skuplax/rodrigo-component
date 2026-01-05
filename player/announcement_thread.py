@@ -6,10 +6,13 @@ import subprocess
 import logging
 import time
 import hashlib
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from pathlib import Path
 from dataclasses import dataclass
 from enum import Enum
+
+if TYPE_CHECKING:
+    from player.service import PlayerService
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +36,9 @@ class AnnouncementThread(threading.Thread):
     def __init__(
         self,
         cache_dir: Optional[str] = None,
-        voice_model_path: Optional[str] = None
+        voice_model_path: Optional[str] = None,
+        player_service: Optional["PlayerService"] = None,
+        attenuation_factor: float = 0.3
     ):
         """
         Initialize announcement thread
@@ -41,6 +46,8 @@ class AnnouncementThread(threading.Thread):
         Args:
             cache_dir: Directory for caching audio files. Defaults to data/piper/ relative to project root
             voice_model_path: Path to Piper voice model file. If None, will try to find or download
+            player_service: Optional PlayerService instance for volume attenuation during announcements
+            attenuation_factor: Volume attenuation factor (0.0-1.0). Default 0.3 means reduce to 30% of original
         """
         super().__init__(name="AnnouncementThread", daemon=True)
         
@@ -56,11 +63,17 @@ class AnnouncementThread(threading.Thread):
         # Voice model path
         self.voice_model_path = voice_model_path
         
+        # Volume attenuation support
+        self.player_service = player_service
+        self.attenuation_factor = max(0.0, min(1.0, attenuation_factor))  # Clamp to 0.0-1.0
+        self.announcement_count = 0
+        self.original_volume: Optional[int] = None
+        
         self.command_queue = queue.Queue()
         self.current_process: Optional[subprocess.Popen] = None
         self.running = False
         
-        logger.info(f"AnnouncementThread initialized (cache_dir={self.cache_dir})")
+        logger.info(f"AnnouncementThread initialized (cache_dir={self.cache_dir}, attenuation_factor={self.attenuation_factor})")
     
     def run(self):
         """Main thread loop - handles commands and process monitoring"""
@@ -99,6 +112,28 @@ class AnnouncementThread(threading.Thread):
                 # Process finished
                 logger.debug(f"mpv process finished with code {poll_result}")
                 self.current_process = None
+                
+                # Handle volume restoration after announcement completes
+                if self.announcement_count > 0:
+                    self.announcement_count -= 1
+                    logger.debug(f"AnnouncementThread: Announcement count: {self.announcement_count}")
+                    
+                    # Restore volume only after last announcement finishes
+                    if self.announcement_count == 0 and self.original_volume is not None:
+                        if self.player_service:
+                            # Check if still on Mopidy source before restoring
+                            if self.player_service.state.current_source == "playlist":
+                                try:
+                                    # Use synchronous volume setting for immediate restoration
+                                    self.player_service.set_volume(self.original_volume, sync=True)
+                                    logger.debug(f"AnnouncementThread: Restored volume to {self.original_volume}")
+                                except Exception as e:
+                                    logger.warning(f"AnnouncementThread: Failed to restore volume: {e}")
+                            else:
+                                logger.debug("AnnouncementThread: Source changed, not restoring volume")
+                        
+                        # Reset original volume
+                        self.original_volume = None
     
     def _process_command(self, command: AnnouncementCommand):
         """Process a command from the queue"""
@@ -260,6 +295,43 @@ class AnnouncementThread(threading.Thread):
         
         # Log the actual text being passed (for debugging)
         logger.info(f"Announcing text: '{text}'")
+        
+        # Handle volume attenuation if Mopidy is active source
+        if self.player_service:
+            # Check if Mopidy is the active source
+            if self.player_service.state.current_source == "playlist":
+                # Get current volume (only on first announcement)
+                if self.announcement_count == 0:
+                    original_volume = self.player_service.get_current_volume()
+                    if original_volume is not None and original_volume >= 0:
+                        # Only attenuate if volume is enabled (not -1)
+                        self.original_volume = original_volume
+                        logger.debug(f"AnnouncementThread: Stored original volume: {original_volume}")
+                    else:
+                        logger.debug("AnnouncementThread: Volume disabled or unavailable, skipping attenuation")
+                
+                # Increment announcement count
+                self.announcement_count += 1
+                logger.debug(f"AnnouncementThread: Announcement count: {self.announcement_count}")
+                
+                # Attenuate volume if we have a valid original volume
+                # Do this BEFORE generating/playing audio to ensure it takes effect
+                if self.original_volume is not None and self.original_volume >= 0:
+                    attenuated_volume = int(self.original_volume * self.attenuation_factor)
+                    # Ensure at least 1% volume (unless original was 0)
+                    if self.original_volume > 0:
+                        attenuated_volume = max(1, attenuated_volume)
+                    else:
+                        attenuated_volume = 0
+                    
+                    try:
+                        # Use synchronous volume setting to ensure it takes effect immediately
+                        self.player_service.set_volume(attenuated_volume, sync=True)
+                        logger.debug(f"AnnouncementThread: Attenuated volume from {self.original_volume} to {attenuated_volume}")
+                        # Small delay to ensure volume change takes effect before audio starts
+                        time.sleep(0.1)
+                    except Exception as e:
+                        logger.warning(f"AnnouncementThread: Failed to attenuate volume: {e}")
         
         # Generate or get cached audio
         audio_path = self._generate_audio(text)

@@ -1,6 +1,7 @@
 """Player service orchestrator for Mopidy and YouTube"""
 
 import logging
+import os
 from typing import Optional, List
 from datetime import datetime
 
@@ -37,8 +38,16 @@ class PlayerService:
         # Initialize Mopidy thread (not started yet - will be started in lifespan)
         self.mopidy_thread = MopidyThread(state)
         
+        # Get attenuation factor from environment or use default
+        attenuation_factor = float(os.getenv('ANNOUNCEMENT_ATTENUATION_FACTOR', '0.3'))
+        
         # Initialize announcement thread (not started yet - will be started in lifespan)
-        self.announcement_thread = AnnouncementThread(voice_model_path=announcement_voice_model)
+        # Pass self reference for volume attenuation support
+        self.announcement_thread = AnnouncementThread(
+            voice_model_path=announcement_voice_model,
+            player_service=self,
+            attenuation_factor=attenuation_factor
+        )
         
         # Load initial source
         self._load_current_source()
@@ -174,6 +183,56 @@ class PlayerService:
         self._announce_source(new_source.source_type, new_source.name)
         
         logger.info(f"PlayerService: Cycled from '{old_source.name if old_source else 'None'}' to '{new_source.name}'")
+    
+    def get_current_volume(self) -> Optional[int]:
+        """
+        Get current volume level (only works for Mopidy source)
+        
+        Returns:
+            Volume level (0-100) or -1 if disabled, or None if not Mopidy/not available
+        """
+        # Only get volume if Mopidy is the active source
+        if self.state.current_source != "playlist":
+            logger.debug("PlayerService: get_current_volume called but Mopidy is not active source")
+            return None
+        
+        try:
+            volume = self.mopidy_thread.get_volume()
+            return volume
+        except Exception as e:
+            logger.error(f"PlayerService: get_current_volume error: {e}")
+            return None
+    
+    def set_volume(self, volume: int, sync: bool = False):
+        """
+        Set volume level (only works for Mopidy source)
+        
+        Args:
+            volume: Volume level (0-100)
+            sync: If True, wait for volume to be set synchronously. If False, queue command asynchronously.
+        """
+        # Only set volume if Mopidy is the active source
+        if self.state.current_source != "playlist":
+            logger.debug("PlayerService: set_volume called but Mopidy is not active source")
+            return
+        
+        # Clamp volume to valid range
+        volume = max(0, min(100, volume))
+        
+        try:
+            if sync:
+                # Synchronous volume setting (for immediate effect)
+                success = self.mopidy_thread.set_volume_sync(volume)
+                if success:
+                    logger.debug(f"PlayerService: Volume set to {volume} (synchronous)")
+                else:
+                    logger.warning(f"PlayerService: Failed to set volume synchronously")
+            else:
+                # Asynchronous volume setting (for non-critical changes)
+                self._send_mopidy_command(CommandType.SET_VOLUME, {"volume": volume})
+                logger.debug(f"PlayerService: Volume set to {volume} (asynchronous)")
+        except Exception as e:
+            logger.error(f"PlayerService: set_volume error: {e}")
     
     def _announce_source(self, source_type: str, source_name: str):
         """

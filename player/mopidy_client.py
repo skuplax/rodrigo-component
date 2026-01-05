@@ -188,3 +188,45 @@ class MopidyClient:
         except Exception as e:
             logger.debug(f"MopidyClient: Get current track failed: {e}")
             return None
+    
+    def get_volume(self) -> Optional[int]:
+        """
+        Get current volume level
+        
+        Returns:
+            Volume level (0-100) or -1 if disabled, or None if not connected/error
+        """
+        if not self.is_connected():
+            return None
+        try:
+            status = self.client.status()
+            volume_str = status.get("volume", "-1")
+            volume = int(volume_str)
+            logger.debug(f"MopidyClient: Current volume: {volume}")
+            return volume
+        except (ValueError, KeyError) as e:
+            logger.debug(f"MopidyClient: Get volume failed: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"MopidyClient: Get volume error: {e}")
+            return None
+    
+    def set_volume(self, volume: int):
+        """
+        Set volume level
+        
+        Args:
+            volume: Volume level (0-100). Values outside range will be clamped.
+        """
+        if not self.is_connected():
+            raise ConnectionError("Not connected to Mopidy")
+        
+        # Clamp volume to valid range
+        volume = max(0, min(100, volume))
+        
+        try:
+            self.client.setvol(volume)
+            logger.debug(f"MopidyClient: Volume set to {volume}")
+        except Exception as e:
+            logger.error(f"MopidyClient: Set volume failed: {e}")
+            raise

@@ -1,4 +1,5 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from typing import Optional
 import asyncio
@@ -86,6 +87,11 @@ app = FastAPI(
 )
 
 
+class AnnouncementRequest(BaseModel):
+    """Request model for announcement endpoint"""
+    text: str
+
+
 @app.get("/")
 async def root():
     """Root endpoint - API information"""
@@ -98,6 +104,7 @@ async def root():
             "state": "/api/state",
             "gpio_events": "/api/gpio/events",
             "gpio_status": "/api/gpio/status",
+            "announce": "/api/announce",
             "websocket": "/ws/gpio"
         }
     }
@@ -134,6 +141,43 @@ async def get_gpio_status():
         "gpio_status": jukebox_state.gpio_status,
         "monitor_running": gpio_monitor.running if gpio_monitor else False
     }
+
+
+@app.post("/api/announce")
+async def announce(request: AnnouncementRequest):
+    """
+    Trigger a custom announcement
+    
+    Args:
+        request: AnnouncementRequest with text to announce
+        
+    Example:
+        curl -X POST http://localhost:8000/api/announce -H "Content-Type: application/json" -d '{"text": "Hello, this is a test"}'
+    """
+    if not player_service:
+        raise HTTPException(status_code=503, detail="Player service not initialized")
+    
+    if not request.text or not request.text.strip():
+        raise HTTPException(status_code=400, detail="Text cannot be empty")
+    
+    try:
+        from player.announcement_thread import AnnouncementCommand, AnnouncementCommandType
+        
+        command = AnnouncementCommand(
+            AnnouncementCommandType.ANNOUNCE,
+            {"text": request.text}
+        )
+        player_service.announcement_thread.send_command(command)
+        
+        logger.info(f"Announcement requested: '{request.text}'")
+        return {
+            "status": "success",
+            "message": "Announcement queued",
+            "text": request.text
+        }
+    except Exception as e:
+        logger.error(f"Error sending announcement: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to send announcement: {str(e)}")
 
 
 @app.websocket("/ws/gpio")
