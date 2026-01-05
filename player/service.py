@@ -98,6 +98,8 @@ class PlayerService:
             # Update state to reflect source type
             with self.state.lock:
                 self.state.current_source = "playlist"
+            # Ensure volume is at 100% when loading Spotify playlist
+            self.set_volume(100, sync=True)
             # Load playlist
             self._send_mopidy_command(
                 CommandType.LOAD_PLAYLIST,

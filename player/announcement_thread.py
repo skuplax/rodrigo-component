@@ -124,9 +124,9 @@ class AnnouncementThread(threading.Thread):
                             # Check if still on Mopidy source before restoring
                             if self.player_service.state.current_source == "playlist":
                                 try:
-                                    # Use synchronous volume setting for immediate restoration
-                                    self.player_service.set_volume(self.original_volume, sync=True)
-                                    logger.debug(f"AnnouncementThread: Restored volume to {self.original_volume}")
+                                    # Always restore to 100% to ensure Spotify is at full volume when not attenuated
+                                    self.player_service.set_volume(100, sync=True)
+                                    logger.debug(f"AnnouncementThread: Restored volume to 100% (was {self.original_volume} before attenuation)")
                                 except Exception as e:
                                     logger.warning(f"AnnouncementThread: Failed to restore volume: {e}")
                             else:
