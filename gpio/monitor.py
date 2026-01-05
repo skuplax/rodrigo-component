@@ -2,9 +2,11 @@
 
 from gpiozero import Button
 import logging
+import os
 from typing import Optional
 
 from gpio.state import JukeboxState
+from gpio.volume_control import VolumeControl
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,7 @@ class GPIOMonitor:
         self.buttons = {}
         self.pin_to_action = {}  # Map pin to action for release events
         self.running = False
+        self.volume_control = None
         
         # Button configuration
         button_config = {
@@ -47,6 +50,31 @@ class GPIOMonitor:
             logger.error(f"Error initializing GPIO buttons: {e}")
             logger.warning("Running in GPIO simulation mode (not on Raspberry Pi)")
             self.buttons = {}
+        
+        # Initialize rotary encoder volume control (ALSA PCM)
+        try:
+            # Get pins from environment or use defaults (KY-040: CLK=5, DT=6, SW=13)
+            clk_pin = int(os.getenv('VOLUME_ENCODER_CLK_PIN', '5'))
+            dt_pin = int(os.getenv('VOLUME_ENCODER_DT_PIN', '6'))
+            sw_pin = os.getenv('VOLUME_ENCODER_SW_PIN', '13')
+            sw_pin = int(sw_pin) if sw_pin else None
+            throttle_ms = int(os.getenv('VOLUME_ENCODER_THROTTLE_MS', '50'))
+            alsa_control = os.getenv('VOLUME_ENCODER_ALSA_CONTROL', 'PCM')
+            volume_per_step = int(os.getenv('VOLUME_ENCODER_STEP', '2'))  # Default 2% per step
+            
+            self.volume_control = VolumeControl(
+                player_service=None,  # Not needed for ALSA control
+                clk_pin=clk_pin,
+                dt_pin=dt_pin,
+                sw_pin=sw_pin,
+                update_throttle_ms=throttle_ms,
+                alsa_control=alsa_control,
+                volume_per_step=volume_per_step
+            )
+            logger.info("Volume rotary encoder initialized")
+        except Exception as e:
+            logger.warning(f"Could not initialize volume encoder: {e}")
+            self.volume_control = None
     
     def _handle_press(self, pin: int, action: str, name: str):
         """Handle button press event - immediate state update for instant feedback"""
@@ -83,6 +111,12 @@ class GPIOMonitor:
     def stop(self):
         """Stop GPIO monitoring and cleanup"""
         self.running = False
+        
+        # Close volume control
+        if self.volume_control:
+            self.volume_control.close()
+        
+        # Close buttons
         for pin, btn in self.buttons.items():
             try:
                 btn.close()
