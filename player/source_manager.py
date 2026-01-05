@@ -22,6 +22,7 @@ class MediaSource:
     type: SourceType
     name: str  # Human-readable name
     uri: str  # Channel URL or playlist URI
+    source_type: str = "music"  # Category: "music" or "news"
 
 
 class SourceManager:
@@ -71,10 +72,12 @@ class SourceManager:
             for item in data:
                 try:
                     source_type = SourceType(item['type'])
+                    source_category = item.get('source_type', 'music')  # Default to 'music' if not specified
                     sources.append(MediaSource(
                         type=source_type,
                         name=item['name'],
-                        uri=item['uri']
+                        uri=item['uri'],
+                        source_type=source_category
                     ))
                 except (KeyError, ValueError) as e:
                     logger.error(f"Invalid source entry in config: {item}, error: {e}")
@@ -100,12 +103,14 @@ class SourceManager:
             MediaSource(
                 type=SourceType.SPOTIFY_PLAYLIST,
                 name="My Favorite Playlist",
-                uri="spotify:playlist:37i9dQZF1DXcBWIGoYBM5M"
+                uri="spotify:playlist:37i9dQZF1DXcBWIGoYBM5M",
+                source_type="music"
             ),
             MediaSource(
                 type=SourceType.YOUTUBE_CHANNEL,
                 name="Lofi Hip Hop",
-                uri="https://www.youtube.com/@LofiGirl"
+                uri="https://www.youtube.com/@LofiGirl",
+                source_type="music"
             ),
         ]
     

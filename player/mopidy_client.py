@@ -136,8 +136,8 @@ class MopidyClient:
             # Clear current playlist
             self.client.clear()
             
-            # Load playlist
-            self.client.load(playlist_uri)
+            # Add playlist tracks to queue (MPD 'add' command works with Spotify URIs)
+            self.client.add(playlist_uri)
             
             # Shuffle if requested
             if shuffle:

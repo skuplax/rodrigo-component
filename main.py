@@ -3,6 +3,8 @@ from contextlib import asynccontextmanager
 from typing import Optional
 import asyncio
 import logging
+import os
+from pathlib import Path
 
 from gpio import JukeboxState, GPIOMonitor
 from player import PlayerService
@@ -27,9 +29,24 @@ async def lifespan(app: FastAPI):
     global player_service, gpio_monitor
     logger.info("Starting Rodrigo Component...")
     
+    # Configure voice model path
+    project_root = Path(__file__).parent
+    voice_model_path = os.getenv(
+        'PIPER_VOICE_MODEL',
+        str(project_root / "data" / "piper" / "voices" / "en_US-lessac-medium.onnx")
+    )
+    
+    # Check if voice model exists
+    if not Path(voice_model_path).exists():
+        logger.warning(f"Voice model not found at {voice_model_path}, announcements will be disabled")
+        voice_model_path = None
+    
     # Initialize player service (includes MopidyThread, but not started yet)
     # Sources default to SourceManager defaults if not provided
-    player_service = PlayerService(jukebox_state)
+    player_service = PlayerService(
+        jukebox_state,
+        announcement_voice_model=voice_model_path
+    )
     
     # Start Mopidy thread
     player_service.start()

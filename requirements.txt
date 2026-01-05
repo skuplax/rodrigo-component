@@ -4,7 +4,12 @@ gpiozero>=1.6.2
 RPi.GPIO>=0.7.1
 python-mpd2>=3.0.0
 yt-dlp>=2023.12.30
+piper-tts>=1.0.0
 
 # Note: mpv must be installed system-wide:
 # sudo apt-get install mpv
+
+# Note: Piper voice models can be downloaded from:
+# https://github.com/rhasspy/piper/releases
+# Or use piper-tts Python package which may include models
 

@@ -18,6 +18,7 @@ class CommandType(Enum):
     """Command types for Mopidy thread"""
     PLAY = "play"
     PAUSE = "pause"
+    TOGGLE = "toggle"
     NEXT = "next"
     PREVIOUS = "previous"
     STOP = "stop"
@@ -159,6 +160,19 @@ class MopidyThread(threading.Thread):
                 self.client.play()
             elif command.type == CommandType.PAUSE:
                 self.client.pause()
+            elif command.type == CommandType.TOGGLE:
+                # Query actual Mopidy state and toggle accordingly
+                playback_state = self.client.get_playback_state()
+                if playback_state == "play":
+                    self.client.pause()
+                    logger.debug("MopidyThread: Toggled from play to pause")
+                elif playback_state == "pause":
+                    self.client.play()
+                    logger.debug("MopidyThread: Toggled from pause to play")
+                else:
+                    # If stopped, start playing
+                    self.client.play()
+                    logger.debug("MopidyThread: Toggled from stop to play")
             elif command.type == CommandType.NEXT:
                 self.client.next()
             elif command.type == CommandType.PREVIOUS:

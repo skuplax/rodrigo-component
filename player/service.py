@@ -6,6 +6,7 @@ from typing import Optional, List
 from player.mopidy_thread import MopidyThread, Command, CommandType
 from player.youtube_client import YouTubeClient
 from player.source_manager import SourceManager, MediaSource, SourceType
+from player.announcement_thread import AnnouncementThread, AnnouncementCommand, AnnouncementCommandType
 from gpio.state import JukeboxState
 
 logger = logging.getLogger(__name__)
@@ -14,20 +15,29 @@ logger = logging.getLogger(__name__)
 class PlayerService:
     """Orchestrates Mopidy (Spotify) and YouTube playback"""
     
-    def __init__(self, state: JukeboxState, sources: Optional[List[MediaSource]] = None):
+    def __init__(
+        self,
+        state: JukeboxState,
+        sources: Optional[List[MediaSource]] = None,
+        announcement_voice_model: Optional[str] = None
+    ):
         """
         Initialize player service
         
         Args:
             state: JukeboxState instance for coordination
             sources: Optional list of MediaSource objects. If None, uses defaults from SourceManager
+            announcement_voice_model: Optional path to Piper voice model for announcements
         """
         self.state = state
         self.source_manager = SourceManager(sources)
-        self.youtube_client = YouTubeClient()
+        self.youtube_client = YouTubeClient(state)
         
         # Initialize Mopidy thread (not started yet - will be started in lifespan)
         self.mopidy_thread = MopidyThread(state)
+        
+        # Initialize announcement thread (not started yet - will be started in lifespan)
+        self.announcement_thread = AnnouncementThread(voice_model_path=announcement_voice_model)
         
         # Load initial source
         self._load_current_source()
@@ -35,16 +45,32 @@ class PlayerService:
         logger.info("PlayerService initialized")
     
     def start(self):
-        """Start the Mopidy thread"""
+        """Start the Mopidy, YouTube, and Announcement threads"""
         if not self.mopidy_thread.is_alive():
             self.mopidy_thread.start()
             logger.info("MopidyThread started")
+        
+        # Start YouTube thread
+        self.youtube_client.start()
+        
+        # Start announcement thread
+        if not self.announcement_thread.is_alive():
+            self.announcement_thread.start()
+            logger.info("AnnouncementThread started")
     
     def stop(self):
-        """Stop the Mopidy thread gracefully"""
+        """Stop the Mopidy, YouTube, and Announcement threads gracefully"""
         if self.mopidy_thread.is_alive():
             self.mopidy_thread.stop_thread()
             logger.info("MopidyThread stopped")
+        
+        # Stop YouTube thread
+        self.youtube_client.stop_thread()
+        
+        # Stop announcement thread
+        if self.announcement_thread.is_alive():
+            self.announcement_thread.stop_thread()
+            logger.info("AnnouncementThread stopped")
     
     def _send_mopidy_command(self, command_type: CommandType, data: Optional[dict] = None):
         """Send a command to Mopidy thread (non-blocking)"""
@@ -83,11 +109,8 @@ class PlayerService:
         current_source = self.state.current_source
         
         if current_source == "playlist":
-            # Toggle Mopidy playback
-            if self.state.is_playing:
-                self._send_mopidy_command(CommandType.PAUSE)
-            else:
-                self._send_mopidy_command(CommandType.PLAY)
+            # Toggle Mopidy playback - use TOGGLE command which queries actual state
+            self._send_mopidy_command(CommandType.TOGGLE)
             logger.info(f"PlayerService: Toggle play/pause for {current_source}")
         elif current_source == "stream":
             # Toggle YouTube playback
@@ -146,4 +169,23 @@ class PlayerService:
         # Load and play new source
         self._load_current_source()
         
+        # Announce the new source name
+        self._announce_source(new_source.source_type, new_source.name)
+        
         logger.info(f"PlayerService: Cycled from '{old_source.name if old_source else 'None'}' to '{new_source.name}'")
+    
+    def _announce_source(self, source_type: str, source_name: str):
+        """
+        Announce source name via announcement service
+        
+        Args:
+            source_type: Category of source ("music" or "news")
+            source_name: Name of the source to announce
+        """
+        announcement_text = f"{source_type}, {source_name}"
+        command = AnnouncementCommand(
+            AnnouncementCommandType.ANNOUNCE,
+            {"text": announcement_text}
+        )
+        self.announcement_thread.send_command(command)
+        logger.debug(f"Announcement sent: {announcement_text}")
