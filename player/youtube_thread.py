@@ -36,7 +36,7 @@ class YouTubeCommand:
 class YouTubeThread(threading.Thread):
     """Thread for managing YouTube playback with mpv"""
     
-    def __init__(self, state, watched_videos_file: str = "watched_videos.json"):
+    def __init__(self, state, watched_videos_file: str = "data/watched_videos.json"):
         """
         Initialize YouTube thread
         
