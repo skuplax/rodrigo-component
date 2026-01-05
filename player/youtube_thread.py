@@ -187,11 +187,12 @@ class YouTubeThread(threading.Thread):
             normalized_url = channel_url.replace('@@', '@')
             
             # Use yt-dlp to get channel videos
-            # Format: %(id)s|%(title)s|%(url)s
+            # Format: %(id)s|%(title)s
+            # Note: %(url)s is not reliable with --flat-playlist, so we construct it from ID
             cmd = [
                 'yt-dlp',
                 '--flat-playlist',
-                '--print', '%(id)s|%(title)s|%(url)s',
+                '--print', '%(id)s|%(title)s',
                 '--playlist-end', str(max_videos),
                 normalized_url
             ]
@@ -212,22 +213,21 @@ class YouTubeThread(threading.Thread):
                     continue
                 
                 try:
-                    # Parse format: video_id|title|url
-                    parts = line.split('|', 2)
-                    if len(parts) >= 3:
+                    # Parse format: video_id|title
+                    parts = line.split('|', 1)
+                    if len(parts) >= 2:
                         video_id = parts[0].strip()
                         title = parts[1].strip()
-                        video_url = parts[2].strip()
-                    elif len(parts) == 2:
-                        # Fallback if URL is missing
-                        video_id = parts[0].strip()
-                        title = parts[1].strip()
-                        video_url = f"https://www.youtube.com/watch?v={video_id}"
-                    else:
-                        # Just video ID
+                    elif len(parts) == 1:
+                        # Just video ID, no title
                         video_id = parts[0].strip()
                         title = "Unknown"
-                        video_url = f"https://www.youtube.com/watch?v={video_id}"
+                    else:
+                        # Skip empty lines
+                        continue
+                    
+                    # Construct URL from video ID (more reliable than using %(url)s)
+                    video_url = f"https://www.youtube.com/watch?v={video_id}"
                     
                     videos.append({
                         'id': video_id,
