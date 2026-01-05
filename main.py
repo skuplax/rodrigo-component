@@ -57,6 +57,11 @@ async def lifespan(app: FastAPI):
     
     logger.info("Rodrigo Component started successfully")
     
+    # Wait a moment for threads to be ready, then announce startup
+    await asyncio.sleep(2.0)
+    if player_service:
+        player_service.announce_startup()
+    
     yield
     
     # Shutdown

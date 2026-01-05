@@ -2,6 +2,7 @@
 
 import logging
 from typing import Optional, List
+from datetime import datetime
 
 from player.mopidy_thread import MopidyThread, Command, CommandType
 from player.youtube_client import YouTubeClient
@@ -189,3 +190,34 @@ class PlayerService:
         )
         self.announcement_thread.send_command(command)
         logger.debug(f"Announcement sent: {announcement_text}")
+    
+    def announce_startup(self):
+        """
+        Announce startup message with current source using Tagalog greeting based on time of day
+        """
+        # Get current hour to determine time of day
+        current_hour = datetime.now().hour
+        
+        # Determine greeting based on time:
+        # Morning (umaga): 5:00 AM - 11:59 AM
+        # Noon/Afternoon (tanghali): 12:00 PM - 5:59 PM
+        # Evening/Night (gabi): 6:00 PM - 4:59 AM
+        if 5 <= current_hour < 12:
+            greeting = "Magandang umaga"
+        elif 12 <= current_hour < 18:
+            greeting = "Magandang tanghali"
+        else:
+            greeting = "Magandang gabi"
+        
+        source = self.source_manager.get_current_source()
+        if source:
+            announcement_text = f"{greeting}, now playing: {source.name}"
+        else:
+            announcement_text = f"{greeting}, system started"
+        
+        command = AnnouncementCommand(
+            AnnouncementCommandType.ANNOUNCE,
+            {"text": announcement_text}
+        )
+        self.announcement_thread.send_command(command)
+        logger.info(f"Startup announcement sent: {announcement_text}")
