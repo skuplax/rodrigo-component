@@ -164,6 +164,12 @@ class PlayerService:
     
     def cycle_source(self):
         """Cycle to next source in the list (non-blocking)"""
+        # Get next source
+        new_source = self.source_manager.next_source()
+
+        # Announce the new source name
+        self._announce_source(new_source.source_type, new_source.name)
+
         old_source = self.source_manager.get_current_source()
         
         # Stop current playback
@@ -175,14 +181,9 @@ class PlayerService:
                 self.youtube_client.stop()
                 logger.info(f"PlayerService: Stopped {old_source.name} playback")
         
-        # Get next source
-        new_source = self.source_manager.next_source()
-        
         # Load and play new source
         self._load_current_source()
         
-        # Announce the new source name
-        self._announce_source(new_source.source_type, new_source.name)
         
         logger.info(f"PlayerService: Cycled from '{old_source.name if old_source else 'None'}' to '{new_source.name}'")
     
@@ -281,4 +282,4 @@ class PlayerService:
             {"text": announcement_text}
         )
         self.announcement_thread.send_command(command)
-        logger.info(f"Startup announcement sent: {announcement_text}")
+        logger.debug(f"Startup announcement sent: {announcement_text}")

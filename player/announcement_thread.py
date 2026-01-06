@@ -31,7 +31,7 @@ class AnnouncementCommand:
 
 
 class AnnouncementThread(threading.Thread):
-    """Thread for managing TTS announcements with Piper and mpv playback"""
+    """Thread for managing TTS announcements with Piper and aplay playback"""
     
     def __init__(
         self,
@@ -89,7 +89,7 @@ class AnnouncementThread(threading.Thread):
                 except queue.Empty:
                     pass
                 
-                # Monitor mpv process
+                # Monitor audio playback process
                 self._monitor_process()
                 
                 # Small sleep to prevent tight loop
@@ -104,13 +104,13 @@ class AnnouncementThread(threading.Thread):
         logger.info("AnnouncementThread stopped")
     
     def _monitor_process(self):
-        """Monitor mpv process and handle completion"""
+        """Monitor audio playback process and handle completion"""
         if self.current_process:
             # Check if process has finished
             poll_result = self.current_process.poll()
             if poll_result is not None:
                 # Process finished
-                logger.debug(f"mpv process finished with code {poll_result}")
+                logger.debug(f"Audio playback process finished with code {poll_result}")
                 self.current_process = None
                 
                 # Handle volume restoration after announcement completes
@@ -242,12 +242,13 @@ class AnnouncementThread(threading.Thread):
     
     def _play_audio(self, audio_path: Path):
         """
-        Play audio file using mpv
+        Play audio file using aplay (ALSA) for instant playback
         
         Args:
             audio_path: Path to audio file to play
         """
         try:
+
             # Stop any existing playback (interrupt capability)
             self._stop_playback()
             
@@ -255,17 +256,18 @@ class AnnouncementThread(threading.Thread):
                 logger.error(f"Audio file not found: {audio_path}")
                 return
             
-            # Play with mpv (no video, audio only)
+            # Play with aplay (ALSA direct) - faster startup than mpv
+            # -q = quiet mode (suppress output)
             self.current_process = subprocess.Popen(
-                ['mpv', '--no-video', '--really-quiet', str(audio_path)],
+                ['aplay', '-q', str(audio_path)],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
             )
             
-            logger.info(f"Playing announcement: {audio_path.name}")
+            logger.debug(f"Playing announcement: {audio_path.name}")
             
         except FileNotFoundError:
-            logger.error("mpv not found. Please install mpv: sudo apt-get install mpv")
+            logger.error("aplay not found. Please install alsa-utils: sudo apt-get install alsa-utils")
         except Exception as e:
             logger.error(f"Error playing audio: {e}")
     
@@ -294,7 +296,9 @@ class AnnouncementThread(threading.Thread):
             return
         
         # Log the actual text being passed (for debugging)
-        logger.info(f"Announcing text: '{text}'")
+        logger.debug(f"Announcing text: '{text}'")
+        
+        # Get current time
         
         # Handle volume attenuation if Mopidy is active source
         if self.player_service:
@@ -329,7 +333,7 @@ class AnnouncementThread(threading.Thread):
                         self.player_service.set_volume(attenuated_volume, sync=True)
                         logger.debug(f"AnnouncementThread: Attenuated volume from {self.original_volume} to {attenuated_volume}")
                         # Small delay to ensure volume change takes effect before audio starts
-                        time.sleep(0.1)
+                        # time.sleep(0.1)
                     except Exception as e:
                         logger.warning(f"AnnouncementThread: Failed to attenuate volume: {e}")
         
@@ -341,7 +345,8 @@ class AnnouncementThread(threading.Thread):
             self._play_audio(audio_path)
         else:
             logger.warning(f"Failed to generate audio for announcement: {text[:50]}...")
-    
+
+
     def send_command(self, command: AnnouncementCommand):
         """Send a command to the thread (non-blocking)"""
         try:

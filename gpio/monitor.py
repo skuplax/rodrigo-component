@@ -84,7 +84,9 @@ class GPIOMonitor:
         if action == "toggle_play":
             self.state.toggle_play()
         elif action == "cycle_source":
-            self.state.cycle_source()
+            # self.state.cycle_source()
+            self.player_service.cycle_source()
+
         # Note: next/previous don't update state on press, only on release
     
     def _handle_release(self, pin: int):
@@ -100,8 +102,8 @@ class GPIOMonitor:
                 self.player_service.next()
             elif action == "previous":
                 self.player_service.previous()
-            elif action == "cycle_source":
-                self.player_service.cycle_source()
+            # elif action == "cycle_source":
+            #     self.player_service.cycle_source()
     
     def start(self):
         """Start GPIO monitoring"""
