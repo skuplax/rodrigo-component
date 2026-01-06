@@ -12,6 +12,9 @@ from pathlib import Path
 from dataclasses import dataclass
 from enum import Enum
 
+from db.models import WatchedVideo as WatchedVideoModel
+from db.database import AsyncSessionLocal, run_async
+
 logger = logging.getLogger(__name__)
 
 
@@ -59,23 +62,96 @@ class YouTubeThread(threading.Thread):
         logger.info(f"YouTubeThread initialized (watched: {len(self.watched_videos)} videos)")
     
     def _load_watched_videos(self) -> Set[str]:
-        """Load watched video IDs from file"""
+        """Load watched video IDs from database, fallback to file"""
+        try:
+            return self._load_watched_videos_from_db_sync()
+        except Exception as e:
+            logger.warning(f"Failed to load watched videos from database: {e}, trying file fallback")
+            return self._load_watched_videos_from_file()
+    
+    def _load_watched_videos_from_file(self) -> Set[str]:
+        """Load watched video IDs from file (fallback)"""
         if self.watched_videos_file.exists():
             try:
                 with open(self.watched_videos_file, 'r') as f:
                     data = json.load(f)
                     return set(data.get('watched', []))
             except Exception as e:
-                logger.warning(f"Failed to load watched videos: {e}")
+                logger.warning(f"Failed to load watched videos from file: {e}")
         return set()
     
+    async def _load_watched_videos_from_db(self) -> Set[str]:
+        """Load watched video IDs from database
+        
+        Note: This loads all video IDs into memory for fast O(1) set lookups.
+        For very large datasets (10k+ videos), consider lazy loading or caching strategies.
+        """
+        async with AsyncSessionLocal() as session:
+            from sqlalchemy import select
+            # Uses index on video_id for efficient query
+            result = await session.execute(select(WatchedVideoModel.video_id))
+            video_ids = result.scalars().all()
+            return set(video_ids)
+    
+    async def _is_video_watched_in_db(self, video_id: str) -> bool:
+        """Check if a single video is watched in database (O(log n) lookup with index)
+        
+        This is more efficient than loading all IDs for single checks.
+        Useful for lazy loading strategies with large datasets.
+        """
+        async with AsyncSessionLocal() as session:
+            from sqlalchemy import select, exists
+            result = await session.execute(
+                select(exists().where(WatchedVideoModel.video_id == video_id))
+            )
+            return result.scalar() or False
+    
+    def _load_watched_videos_from_db_sync(self) -> Set[str]:
+        """Sync wrapper for loading watched videos from database"""
+        return run_async(self._load_watched_videos_from_db())
+    
     def _save_watched_videos(self):
-        """Save watched video IDs to file"""
+        """Save watched video IDs to database, fallback to file"""
+        try:
+            self._save_watched_videos_to_db_sync()
+        except Exception as e:
+            logger.warning(f"Failed to save watched videos to database: {e}, trying file fallback")
+            self._save_watched_videos_to_file()
+    
+    def _save_watched_videos_to_file(self):
+        """Save watched video IDs to file (fallback)"""
         try:
             with open(self.watched_videos_file, 'w') as f:
                 json.dump({'watched': list(self.watched_videos)}, f)
         except Exception as e:
-            logger.error(f"Failed to save watched videos: {e}")
+            logger.error(f"Failed to save watched videos to file: {e}")
+    
+    async def _save_watched_videos_to_db(self):
+        """Save watched video IDs to database (batch upsert)"""
+        if not self.watched_videos:
+            return
+        
+        async with AsyncSessionLocal() as session:
+            from sqlalchemy.dialects.postgresql import insert
+            
+            # Direct bulk insert - let database handle duplicates via ON CONFLICT
+            # This is more efficient than pre-checking all existing IDs
+            # The unique index on video_id ensures no duplicates
+            stmt = insert(WatchedVideoModel).values([
+                {'video_id': video_id} for video_id in self.watched_videos
+            ])
+            # Use ON CONFLICT DO NOTHING for idempotency (handles duplicates efficiently)
+            stmt = stmt.on_conflict_do_nothing(index_elements=['video_id'])
+            result = await session.execute(stmt)
+            await session.commit()
+            
+            # Log how many were actually inserted (result.rowcount shows affected rows)
+            # Note: rowcount may not be accurate for ON CONFLICT, but it's informative
+            logger.debug(f"Upserted watched video IDs to database (total in memory: {len(self.watched_videos)})")
+    
+    def _save_watched_videos_to_db_sync(self):
+        """Sync wrapper for saving watched videos to database"""
+        run_async(self._save_watched_videos_to_db())
     
     def run(self):
         """Main thread loop - handles commands and process monitoring"""

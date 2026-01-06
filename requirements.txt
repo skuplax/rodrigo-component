@@ -5,6 +5,12 @@ RPi.GPIO>=0.7.1
 python-mpd2>=3.0.0
 yt-dlp>=2023.12.30
 piper-tts>=1.0.0
+sqlalchemy>=2.0.0
+alembic>=1.13.0
+asyncpg>=0.29.0
+psycopg2-binary>=2.9.0
+python-dotenv>=1.0.0
+
 
 # Note: mpv must be installed system-wide:
 # sudo apt-get install mpv

@@ -106,6 +106,7 @@ class PlayerService:
                 {"playlist_uri": source.uri, "shuffle": True}
             )
             logger.info(f"PlayerService: Loaded playlist '{source.name}'")
+
         elif source.type == SourceType.YOUTUBE_CHANNEL:
             # Update state to reflect source type
             with self.state.lock:
@@ -141,6 +142,8 @@ class PlayerService:
         if current_source == "playlist":
             # Mopidy handles looping automatically when at end of playlist
             self._send_mopidy_command(CommandType.NEXT)
+            if not self.state.is_playing:
+                self._send_mopidy_command(CommandType.PLAY) # Ensure playback is resumed after next
             logger.info(f"PlayerService: Next track for {current_source}")
         elif current_source == "stream":
             # YouTube client handles looping (resets when all watched)
@@ -155,6 +158,8 @@ class PlayerService:
         
         if current_source == "playlist":
             self._send_mopidy_command(CommandType.PREVIOUS)
+            if not self.state.is_playing:
+                self._send_mopidy_command(CommandType.PLAY) # Ensure playback is resumed after previous
             logger.info(f"PlayerService: Previous track for {current_source}")
         elif current_source == "stream":
             self.youtube_client.previous()

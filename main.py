@@ -6,6 +6,10 @@ import asyncio
 import logging
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 from gpio import JukeboxState, GPIOMonitor
 from player import PlayerService
