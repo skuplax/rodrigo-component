@@ -21,7 +21,8 @@ class PlayerService:
         self,
         state: JukeboxState,
         sources: Optional[List[MediaSource]] = None,
-        announcement_voice_model: Optional[str] = None
+        announcement_voice_model: Optional[str] = None,
+        dev_mode: bool = False
     ):
         """
         Initialize player service
@@ -30,8 +31,10 @@ class PlayerService:
             state: JukeboxState instance for coordination
             sources: Optional list of MediaSource objects. If None, uses defaults from SourceManager
             announcement_voice_model: Optional path to Piper voice model for announcements
+            dev_mode: If True, skip auto-play when loading sources
         """
         self.state = state
+        self.dev_mode = dev_mode
         self.source_manager = SourceManager(sources)
         self.youtube_client = YouTubeClient(state)
         
@@ -49,7 +52,7 @@ class PlayerService:
             attenuation_factor=attenuation_factor
         )
         
-        # Load initial source
+        # Load initial source (will skip auto-play if dev_mode is True)
         self._load_current_source()
         
         logger.info("PlayerService initialized")
@@ -94,6 +97,22 @@ class PlayerService:
             logger.warning("No current source available")
             return
         
+        # In dev mode, skip loading entirely to avoid interfering with running systemd services
+        if self.dev_mode:
+            # Just update state to reflect source type, but don't load anything
+            if source.type == SourceType.SPOTIFY_PLAYLIST:
+                with self.state.lock:
+                    self.state.current_source = "playlist"
+                logger.info(f"PlayerService: Dev mode - skipping playlist load for '{source.name}' (to avoid interfering with running Mopidy)")
+            elif source.type == SourceType.YOUTUBE_CHANNEL:
+                with self.state.lock:
+                    self.state.current_source = "stream"
+                logger.info(f"PlayerService: Dev mode - skipping channel load for '{source.name}' (to avoid interfering with running mpv)")
+            else:
+                logger.warning(f"PlayerService: Unknown source type: {source.type}")
+            return
+        
+        # Normal mode: load the source
         if source.type == SourceType.SPOTIFY_PLAYLIST:
             # Update state to reflect source type
             with self.state.lock:
@@ -103,7 +122,7 @@ class PlayerService:
             # Load playlist
             self._send_mopidy_command(
                 CommandType.LOAD_PLAYLIST,
-                {"playlist_uri": source.uri, "shuffle": True}
+                {"playlist_uri": source.uri, "shuffle": True, "auto_play": True}
             )
             logger.info(f"PlayerService: Loaded playlist '{source.name}'")
 

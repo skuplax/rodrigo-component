@@ -7,7 +7,9 @@ import json
 import logging
 import time
 import re
-from typing import Optional, List, Set
+import socket
+import os
+from typing import Optional, List, Set, Tuple
 from pathlib import Path
 from dataclasses import dataclass
 from enum import Enum
@@ -58,6 +60,11 @@ class YouTubeThread(threading.Thread):
         self.current_videos: List[dict] = []
         self.current_video_index = 0
         self.running = False
+        
+        # mpv IPC socket for position/duration tracking
+        self.mpv_ipc_socket: Optional[str] = None
+        self.poll_interval = 1.5  # Poll state every 1.5 seconds
+        self.last_poll_time = 0.0
         
         logger.info(f"YouTubeThread initialized (watched: {len(self.watched_videos)} videos)")
     
@@ -169,6 +176,12 @@ class YouTubeThread(threading.Thread):
                 
                 # Monitor mpv process
                 self._monitor_process()
+                
+                # Poll mpv state for position/duration
+                current_time = time.time()
+                if current_time - self.last_poll_time >= self.poll_interval:
+                    self._poll_state()
+                    self.last_poll_time = current_time
                 
                 # Small sleep to prevent tight loop
                 time.sleep(0.1)
@@ -391,12 +404,26 @@ class YouTubeThread(threading.Thread):
             
             video_url = result.stdout.strip()
             
-            # Play with mpv (no video, audio only)
+            # Create IPC socket path for mpv communication
+            # Use a unique socket path per process
+            socket_name = f"mpv_socket_{os.getpid()}_{int(time.time())}"
+            self.mpv_ipc_socket = f"/tmp/{socket_name}"
+            
+            # Play with mpv (no video, audio only, with IPC socket)
             self.current_process = subprocess.Popen(
-                ['mpv', '--no-video', '--really-quiet', video_url],
+                [
+                    'mpv',
+                    '--no-video',
+                    '--really-quiet',
+                    '--input-ipc-server', self.mpv_ipc_socket,
+                    video_url
+                ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
             )
+            
+            # Wait a moment for mpv to start and create the socket
+            time.sleep(0.5)
             
             # Mark as watched
             self.watched_videos.add(video['id'])
@@ -468,9 +495,19 @@ class YouTubeThread(threading.Thread):
             finally:
                 self.current_process = None
         
+        # Clean up IPC socket file if it exists
+        if self.mpv_ipc_socket and os.path.exists(self.mpv_ipc_socket):
+            try:
+                os.unlink(self.mpv_ipc_socket)
+            except Exception as e:
+                logger.debug(f"Error removing mpv IPC socket: {e}")
+        self.mpv_ipc_socket = None
+        
         # Update state
         with self.state.lock:
             self.state.is_playing = False
+            self.state.position = None
+            self.state.duration = None
     
     def _pause_playback(self):
         """Pause playback"""
@@ -494,6 +531,66 @@ class YouTubeThread(threading.Thread):
             self.command_queue.put_nowait(command)
         except queue.Full:
             logger.warning("YouTube command queue full, dropping command")
+    
+    def _get_mpv_time(self) -> Tuple[Optional[float], Optional[float]]:
+        """
+        Get current playhead position and total duration from mpv via IPC
+        
+        Returns:
+            Tuple of (position, duration) in seconds, or (None, None) if error
+        """
+        if not self.mpv_ipc_socket or not os.path.exists(self.mpv_ipc_socket):
+            return (None, None)
+        
+        if not self.current_process or self.current_process.poll() is not None:
+            return (None, None)
+        
+        try:
+            # Connect to mpv IPC socket
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(1.0)
+            sock.connect(self.mpv_ipc_socket)
+            
+            # Request position
+            position_cmd = {"command": ["get_property", "time-pos"]}
+            sock.send((json.dumps(position_cmd) + "\n").encode())
+            position_response = sock.recv(4096).decode()
+            position_data = json.loads(position_response)
+            position = position_data.get("data") if position_data.get("error") == "success" else None
+            
+            # Request duration
+            duration_cmd = {"command": ["get_property", "duration"]}
+            sock.send((json.dumps(duration_cmd) + "\n").encode())
+            duration_response = sock.recv(4096).decode()
+            duration_data = json.loads(duration_response)
+            duration = duration_data.get("data") if duration_data.get("error") == "success" else None
+            
+            sock.close()
+            
+            return (position, duration)
+            
+        except (socket.error, json.JSONDecodeError, KeyError, ValueError) as e:
+            logger.debug(f"Error getting mpv time: {e}")
+            return (None, None)
+        except Exception as e:
+            logger.debug(f"Unexpected error getting mpv time: {e}")
+            return (None, None)
+    
+    def _poll_state(self):
+        """Poll mpv state and update JukeboxState with position and duration"""
+        if not self.current_process or self.current_process.poll() is not None:
+            return
+        
+        try:
+            position, duration = self._get_mpv_time()
+            
+            # Update JukeboxState (thread-safe via lock)
+            with self.state.lock:
+                self.state.position = position
+                self.state.duration = duration
+                    
+        except Exception as e:
+            logger.debug(f"Error polling mpv state: {e}")
     
     def stop_thread(self):
         """Stop the thread gracefully"""

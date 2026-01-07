@@ -1,7 +1,7 @@
 """Mopidy MPD client wrapper"""
 
 import logging
-from typing import Optional
+from typing import Optional, Tuple
 import mpd
 
 logger = logging.getLogger(__name__)
@@ -122,13 +122,14 @@ class MopidyClient:
             logger.error(f"MopidyClient: Stop command failed: {e}")
             raise
     
-    def load_playlist(self, playlist_uri: str, shuffle: bool = True):
+    def load_playlist(self, playlist_uri: str, shuffle: bool = True, auto_play: bool = True):
         """
         Load a Spotify playlist with optional shuffle
         
         Args:
             playlist_uri: Spotify playlist URI (e.g., spotify:playlist:xxx)
             shuffle: Whether to shuffle the playlist
+            auto_play: Whether to start playing immediately after loading
         """
         if not self.is_connected():
             raise ConnectionError("Not connected to Mopidy")
@@ -143,9 +144,12 @@ class MopidyClient:
             if shuffle:
                 self.client.random(1)
             
-            # Start playing
-            self.client.play()
-            logger.info(f"MopidyClient: Loaded playlist '{playlist_uri}' with shuffle={shuffle}")
+            # Start playing only if auto_play is True
+            if auto_play:
+                self.client.play()
+                logger.info(f"MopidyClient: Loaded playlist '{playlist_uri}' with shuffle={shuffle}, auto_play=True")
+            else:
+                logger.info(f"MopidyClient: Loaded playlist '{playlist_uri}' with shuffle={shuffle}, auto_play=False")
         except Exception as e:
             logger.error(f"MopidyClient: Load playlist failed: {e}")
             raise
@@ -230,3 +234,26 @@ class MopidyClient:
         except Exception as e:
             logger.error(f"MopidyClient: Set volume failed: {e}")
             raise
+    
+    def get_time(self) -> Tuple[Optional[float], Optional[float]]:
+        """
+        Get current playhead position and total duration in seconds
+        
+        Returns:
+            Tuple of (position, duration) in seconds, or (None, None) if not connected/error/no track
+            MPD returns time as "current:total" (e.g., "123:456")
+        """
+        if not self.is_connected():
+            return (None, None)
+        try:
+            status = self.client.status()
+            time_str = status.get("time")
+            if time_str:
+                # MPD returns time as "current:total" (e.g., "123:456")
+                parts = time_str.split(":")
+                if len(parts) == 2:
+                    return (float(parts[0]), float(parts[1]))
+            return (None, None)
+        except Exception as e:
+            logger.debug(f"MopidyClient: Get time failed: {e}")
+            return (None, None)

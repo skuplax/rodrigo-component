@@ -24,6 +24,8 @@ class JukeboxState:
             22: {"name": "Next", "state": "released"},
             23: {"name": "Cycle Source", "state": "released"},
         }
+        self.position = None  # Current playhead position in seconds
+        self.duration = None  # Total track duration in seconds
         
     def add_event(self, pin: int, event_type: str, action: str):
         """Add a GPIO event to the history"""
@@ -69,6 +71,8 @@ class JukeboxState:
                 "current_track": self.current_track,
                 "current_source": self.current_source,
                 "available_sources": self.sources,
-                "gpio_status": self.gpio_status.copy()
+                "gpio_status": self.gpio_status.copy(),
+                "position": self.position,
+                "duration": self.duration
             }
 

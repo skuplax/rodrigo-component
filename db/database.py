@@ -93,6 +93,8 @@ engine = create_async_engine(
     pool_pre_ping=True,  # Verify connections before using
     pool_size=5,
     max_overflow=10,
+    pool_recycle=3600,  # Recycle connections after 1 hour to prevent stale connections
+    pool_reset_on_return='commit',  # Reset connection state on return to pool
     connect_args=CONNECT_ARGS,  # SSL configuration for asyncpg
 )
 

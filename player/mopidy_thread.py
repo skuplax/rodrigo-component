@@ -196,8 +196,9 @@ class MopidyThread(threading.Thread):
                 elif command.type == CommandType.LOAD_PLAYLIST:
                     playlist_uri = command.data.get("playlist_uri") if command.data else None
                     shuffle = command.data.get("shuffle", True) if command.data else True
+                    auto_play = command.data.get("auto_play", True) if command.data else True
                     if playlist_uri:
-                        self.client.load_playlist(playlist_uri, shuffle)
+                        self.client.load_playlist(playlist_uri, shuffle, auto_play)
                     else:
                         logger.warning("LoadPlaylistCommand missing playlist_uri")
                 elif command.type == CommandType.GET_VOLUME:
@@ -233,6 +234,7 @@ class MopidyThread(threading.Thread):
                 # Get playback state
                 playback_state = self.client.get_playback_state()
                 current_track = self.client.get_current_track()
+                position, duration = self.client.get_time()
             
             # Update JukeboxState (thread-safe via lock)
             with self.state.lock:
@@ -247,6 +249,10 @@ class MopidyThread(threading.Thread):
                     self.state.current_track = current_track
                 elif playback_state == "stop":
                     self.state.current_track = None
+                
+                # Update position and duration
+                self.state.position = position
+                self.state.duration = duration
                     
         except Exception as e:
             logger.debug(f"Error polling Mopidy state: {e}")
