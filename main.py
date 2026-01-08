@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, Depends
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from typing import Optional, List
@@ -10,7 +10,6 @@ import sys
 from pathlib import Path
 from dotenv import load_dotenv
 from sqlalchemy import select, desc, and_, or_, func
-from sqlalchemy.ext.asyncio import AsyncSession
 
 # Load environment variables from .env file
 load_dotenv()
@@ -18,7 +17,6 @@ load_dotenv()
 from gpio import JukeboxState, GPIOMonitor
 from player import PlayerService
 from dashboard.routes import router as dashboard_router
-from db.database import get_db
 from db.models import Log, Source, AppState
 from db.logging_handler import setup_supabase_logging, SupabaseLogHandler
 
@@ -205,47 +203,50 @@ async def get_state():
 
 
 @app.get("/api/sources")
-async def get_sources(db: AsyncSession = Depends(get_db)):
-    """Get all sources and current source index"""
+def get_sources():
+    """Get all sources and current source index (sync endpoint)"""
+    from db.database import get_sync_session
+    
     try:
-        # Get all sources
-        result = await db.execute(select(Source).order_by(Source.created_at))
-        sources = result.scalars().all()
-        
-        # Get current source index
-        current_index = 0
-        if player_service:
-            current_index = player_service.source_manager.current_source_index
-        else:
-            # Try to get from database
-            app_state_result = await db.execute(
-                select(AppState).where(AppState.key == 'current_source_index')
-            )
-            app_state = app_state_result.scalar_one_or_none()
-            if app_state and app_state.value:
-                try:
-                    current_index = int(app_state.value)
-                except (ValueError, TypeError):
-                    current_index = 0
-        
-        # Convert sources to dict format
-        sources_data = [
-            {
-                "id": str(source.id),
-                "type": source.type,
-                "name": source.name,
-                "uri": source.uri,
-                "source_type": source.source_type,
-                "created_at": source.created_at.isoformat() if source.created_at else None
+        with get_sync_session() as session:
+            # Get all sources
+            result = session.execute(select(Source).order_by(Source.created_at))
+            sources = result.scalars().all()
+            
+            # Get current source index
+            current_index = 0
+            if player_service:
+                current_index = player_service.source_manager.current_source_index
+            else:
+                # Try to get from database
+                app_state_result = session.execute(
+                    select(AppState).where(AppState.key == 'current_source_index')
+                )
+                app_state = app_state_result.scalar_one_or_none()
+                if app_state and app_state.value:
+                    try:
+                        current_index = int(app_state.value)
+                    except (ValueError, TypeError):
+                        current_index = 0
+            
+            # Convert sources to dict format
+            sources_data = [
+                {
+                    "id": str(source.id),
+                    "type": source.type,
+                    "name": source.name,
+                    "uri": source.uri,
+                    "source_type": source.source_type,
+                    "created_at": source.created_at.isoformat() if source.created_at else None
+                }
+                for source in sources
+            ]
+            
+            return {
+                "sources": sources_data,
+                "current_index": current_index,
+                "total": len(sources_data)
             }
-            for source in sources
-        ]
-        
-        return {
-            "sources": sources_data,
-            "current_index": current_index,
-            "total": len(sources_data)
-        }
     except Exception as e:
         logger.error(f"Error fetching sources: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch sources: {str(e)}")
