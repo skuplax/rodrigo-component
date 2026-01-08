@@ -225,6 +225,11 @@ class MopidyThread(threading.Thread):
         if not self.connected:
             return
         
+        # Only update state if Mopidy/playlist is the active source
+        # This prevents overwriting YouTube state when it's playing
+        if self.state.current_source != "playlist":
+            return
+        
         try:
             # Use lock when accessing client
             with self._client_lock:
@@ -238,6 +243,10 @@ class MopidyThread(threading.Thread):
             
             # Update JukeboxState (thread-safe via lock)
             with self.state.lock:
+                # Double-check source is still playlist (could have changed)
+                if self.state.current_source != "playlist":
+                    return
+                
                 # Update playing state
                 if playback_state == "play":
                     self.state.is_playing = True

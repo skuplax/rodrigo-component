@@ -20,7 +20,8 @@ class PlayerService:
     def __init__(
         self,
         state: JukeboxState,
-        sources: Optional[List[MediaSource]] = None,
+        source_manager: SourceManager,
+        watched_videos: set = None,
         announcement_voice_model: Optional[str] = None,
         dev_mode: bool = False
     ):
@@ -29,14 +30,15 @@ class PlayerService:
         
         Args:
             state: JukeboxState instance for coordination
-            sources: Optional list of MediaSource objects. If None, uses defaults from SourceManager
+            source_manager: Pre-initialized SourceManager instance
+            watched_videos: Pre-loaded set of watched video IDs (optional)
             announcement_voice_model: Optional path to Piper voice model for announcements
             dev_mode: If True, skip auto-play when loading sources
         """
         self.state = state
         self.dev_mode = dev_mode
-        self.source_manager = SourceManager(sources)
-        self.youtube_client = YouTubeClient(state)
+        self.source_manager = source_manager
+        self.youtube_client = YouTubeClient(state, watched_videos)
         
         # Initialize Mopidy thread (not started yet - will be started in lifespan)
         self.mopidy_thread = MopidyThread(state)

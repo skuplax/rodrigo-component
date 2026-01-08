@@ -9,7 +9,7 @@ import asyncio
 from pathlib import Path
 
 from db.models import Source as SourceModel, AppState as AppStateModel
-from db.database import AsyncSessionLocal, run_async
+from db.database import AsyncSessionLocal, fire_and_forget_async
 
 logger = logging.getLogger(__name__)
 
@@ -32,112 +32,62 @@ class MediaSource:
 class SourceManager:
     """Manages list of sources and cycling through them"""
     
-    def __init__(self, sources: Optional[List[MediaSource]] = None, config_path: Optional[Path] = None):
+    def __init__(self, sources: List[MediaSource], current_index: int = 0):
         """
-        Initialize source manager
+        Initialize source manager with pre-loaded sources.
+        
+        For async initialization, use SourceManager.create() instead.
         
         Args:
-            sources: List of media sources. If None, loads from database first, then file, then defaults
-            config_path: Path to sources.json file. Defaults to data/sources.json relative to project root
+            sources: List of media sources (required)
+            current_index: Starting source index
         """
-        if sources is not None:
-            self.sources: List[MediaSource] = sources
+        self.sources: List[MediaSource] = sources
+        self.current_source_index = current_index
+        
+        # Validate index is within bounds
+        if self.current_source_index >= len(self.sources):
+            logger.warning(f"Current source index {self.current_source_index} out of bounds, resetting to 0")
             self.current_source_index = 0
-        else:
-            # Try loading from database first, fallback to file
-            try:
-                self.sources = self._load_sources_from_db_sync()
-                if self.sources:
-                    logger.info(f"Loaded {len(self.sources)} sources from database")
-                    # Load current index from database
-                    self.current_source_index = self._load_current_index_from_db_sync()
-                    # Validate index is within bounds
-                    if self.current_source_index >= len(self.sources):
-                        logger.warning(f"Current source index {self.current_source_index} out of bounds, resetting to 0")
-                        self.current_source_index = 0
-                else:
-                    # No sources in database, try file
-                    self.sources = self._load_sources_from_file(config_path)
-                    self.current_source_index = 0
-            except Exception as e:
-                logger.warning(f"Failed to load sources from database: {e}, falling back to file")
-                self.sources = self._load_sources_from_file(config_path)
-                self.current_source_index = 0
         
         logger.info(f"SourceManager initialized with {len(self.sources)} sources (current index: {self.current_source_index})")
     
-    def _load_sources_from_file(self, config_path: Optional[Path] = None) -> List[MediaSource]:
+    @classmethod
+    async def create(cls, config_path: Optional[Path] = None) -> "SourceManager":
         """
-        Load sources from JSON config file
+        Async factory method to create and initialize SourceManager.
+        
+        Loads sources from database first, falls back to file if needed.
         
         Args:
-            config_path: Path to sources.json. If None, uses data/sources.json relative to project root
-        
+            config_path: Path to sources.json file for fallback
+            
         Returns:
-            List of MediaSource objects
+            Initialized SourceManager instance
         """
-        if config_path is None:
-            # Default to data/sources.json relative to project root
-            # Assume we're in player/ directory, so go up one level
-            project_root = Path(__file__).parent.parent
-            config_path = project_root / "data" / "sources.json"
+        sources = []
+        current_index = 0
         
-        if not config_path.exists():
-            logger.warning(f"Sources config file not found at {config_path}, using defaults")
-            return self._get_default_sources()
-        
+        # Try loading from database first
         try:
-            with open(config_path, 'r') as f:
-                data = json.load(f)
-            
-            sources = []
-            for item in data:
-                try:
-                    source_type = SourceType(item['type'])
-                    source_category = item.get('source_type', 'music')  # Default to 'music' if not specified
-                    sources.append(MediaSource(
-                        type=source_type,
-                        name=item['name'],
-                        uri=item['uri'],
-                        source_type=source_category
-                    ))
-                except (KeyError, ValueError) as e:
-                    logger.error(f"Invalid source entry in config: {item}, error: {e}")
-                    continue
-            
-            if not sources:
-                logger.warning("No valid sources found in config file, using defaults")
-                return self._get_default_sources()
-            
-            logger.info(f"Loaded {len(sources)} sources from {config_path}")
-            return sources
-            
-        except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON in sources config file: {e}, using defaults")
-            return self._get_default_sources()
+            sources = await cls._load_sources_from_db_static()
+            if sources:
+                logger.info(f"Loaded {len(sources)} sources from database")
+                current_index = await cls._load_current_index_from_db_static()
+            else:
+                # No sources in database, try file
+                sources = cls._load_sources_from_file_static(config_path)
+                current_index = 0
         except Exception as e:
-            logger.error(f"Error loading sources config file: {e}, using defaults")
-            return self._get_default_sources()
+            logger.warning(f"Failed to load sources from database: {e}, falling back to file")
+            sources = cls._load_sources_from_file_static(config_path)
+            current_index = 0
+        
+        return cls(sources, current_index)
     
-    def _get_default_sources(self) -> List[MediaSource]:
-        """Get default list of sources (fallback if config file not available)"""
-        return [
-            MediaSource(
-                type=SourceType.SPOTIFY_PLAYLIST,
-                name="My Favorite Playlist",
-                uri="spotify:playlist:37i9dQZF1DXcBWIGoYBM5M",
-                source_type="music"
-            ),
-            MediaSource(
-                type=SourceType.YOUTUBE_CHANNEL,
-                name="Lofi Hip Hop",
-                uri="https://www.youtube.com/@LofiGirl",
-                source_type="music"
-            ),
-        ]
-    
-    async def _load_sources_from_db(self) -> List[MediaSource]:
-        """Load sources from database"""
+    @staticmethod
+    async def _load_sources_from_db_static() -> List[MediaSource]:
+        """Load sources from database (static async method)"""
         async with AsyncSessionLocal() as session:
             from sqlalchemy import select
             result = await session.execute(select(SourceModel))
@@ -159,16 +109,9 @@ class SourceManager:
             
             return sources
     
-    def _load_sources_from_db_sync(self) -> List[MediaSource]:
-        """Sync wrapper for loading sources from database"""
-        try:
-            return run_async(self._load_sources_from_db())
-        except Exception as e:
-            logger.error(f"Error in sync wrapper for loading sources: {e}")
-            raise
-    
-    async def _load_current_index_from_db(self) -> int:
-        """Load current source index from database"""
+    @staticmethod
+    async def _load_current_index_from_db_static() -> int:
+        """Load current source index from database (static async method)"""
         async with AsyncSessionLocal() as session:
             from sqlalchemy import select
             result = await session.execute(
@@ -185,13 +128,68 @@ class SourceManager:
                     return 0
             return 0
     
-    def _load_current_index_from_db_sync(self) -> int:
-        """Sync wrapper for loading current index from database"""
+    @staticmethod
+    def _load_sources_from_file_static(config_path: Optional[Path] = None) -> List[MediaSource]:
+        """Load sources from JSON config file (static method)"""
+        if config_path is None:
+            project_root = Path(__file__).parent.parent
+            config_path = project_root / "data" / "sources.json"
+        
+        if not config_path.exists():
+            logger.warning(f"Sources config file not found at {config_path}, using defaults")
+            return SourceManager._get_default_sources_static()
+        
         try:
-            return run_async(self._load_current_index_from_db())
+            with open(config_path, 'r') as f:
+                data = json.load(f)
+            
+            sources = []
+            for item in data:
+                try:
+                    source_type = SourceType(item['type'])
+                    source_category = item.get('source_type', 'music')
+                    sources.append(MediaSource(
+                        type=source_type,
+                        name=item['name'],
+                        uri=item['uri'],
+                        source_type=source_category
+                    ))
+                except (KeyError, ValueError) as e:
+                    logger.error(f"Invalid source entry in config: {item}, error: {e}")
+                    continue
+            
+            if not sources:
+                logger.warning("No valid sources found in config file, using defaults")
+                return SourceManager._get_default_sources_static()
+            
+            logger.info(f"Loaded {len(sources)} sources from {config_path}")
+            return sources
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON in sources config file: {e}, using defaults")
+            return SourceManager._get_default_sources_static()
         except Exception as e:
-            logger.warning(f"Failed to load current index from database: {e}")
-            return 0
+            logger.error(f"Error loading sources config file: {e}, using defaults")
+            return SourceManager._get_default_sources_static()
+    
+    @staticmethod
+    def _get_default_sources_static() -> List[MediaSource]:
+        """Get default list of sources (fallback)"""
+        return [
+            MediaSource(
+                type=SourceType.SPOTIFY_PLAYLIST,
+                name="My Favorite Playlist",
+                uri="spotify:playlist:37i9dQZF1DXcBWIGoYBM5M",
+                source_type="music"
+            ),
+            MediaSource(
+                type=SourceType.YOUTUBE_CHANNEL,
+                name="Lofi Hip Hop",
+                uri="https://www.youtube.com/@LofiGirl",
+                source_type="music"
+            ),
+        ]
+    
     
     async def _save_current_index_to_db(self, index: int):
         """Save current source index to database"""
@@ -212,11 +210,10 @@ class SourceManager:
             logger.debug(f"Saved current_source_index {index} to database")
     
     def _save_current_index_to_db_sync(self, index: int):
-        """Sync wrapper for saving current index to database"""
-        try:
-            run_async(self._save_current_index_to_db(index))
-        except Exception as e:
-            logger.warning(f"Failed to save current index to database: {e}")
+        """Sync wrapper for saving current index to database (fire-and-forget)"""
+        # Use fire_and_forget_async since we don't need to wait for the result
+        # This is safe to call from any context without blocking
+        fire_and_forget_async(self._save_current_index_to_db(index))
     
     def get_current_source(self) -> Optional[MediaSource]:
         """Get current active source"""

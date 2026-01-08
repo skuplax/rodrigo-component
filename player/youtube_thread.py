@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from db.models import WatchedVideo as WatchedVideoModel
-from db.database import AsyncSessionLocal, run_async
+from db.database import AsyncSessionLocal, run_async, fire_and_forget_async
 
 logger = logging.getLogger(__name__)
 
@@ -41,18 +41,24 @@ class YouTubeCommand:
 class YouTubeThread(threading.Thread):
     """Thread for managing YouTube playback with mpv"""
     
-    def __init__(self, state, watched_videos_file: str = "data/watched_videos.json"):
+    def __init__(self, state, watched_videos: Optional[Set[str]] = None, watched_videos_file: str = "data/watched_videos.json"):
         """
         Initialize YouTube thread
         
         Args:
             state: JukeboxState instance for state synchronization
+            watched_videos: Pre-loaded set of watched video IDs (optional)
             watched_videos_file: Path to JSON file storing watched video IDs
         """
         super().__init__(name="YouTubeThread", daemon=True)
         self.state = state
         self.watched_videos_file = Path(watched_videos_file)
-        self.watched_videos: Set[str] = self._load_watched_videos()
+        
+        # Use pre-loaded watched videos if provided, otherwise load from file
+        if watched_videos is not None:
+            self.watched_videos: Set[str] = watched_videos
+        else:
+            self.watched_videos = self._load_watched_videos_from_file()
         
         self.command_queue = queue.Queue()
         self.current_process: Optional[subprocess.Popen] = None
@@ -68,27 +74,9 @@ class YouTubeThread(threading.Thread):
         
         logger.info(f"YouTubeThread initialized (watched: {len(self.watched_videos)} videos)")
     
-    def _load_watched_videos(self) -> Set[str]:
-        """Load watched video IDs from database, fallback to file"""
-        try:
-            return self._load_watched_videos_from_db_sync()
-        except Exception as e:
-            logger.warning(f"Failed to load watched videos from database: {e}, trying file fallback")
-            return self._load_watched_videos_from_file()
-    
-    def _load_watched_videos_from_file(self) -> Set[str]:
-        """Load watched video IDs from file (fallback)"""
-        if self.watched_videos_file.exists():
-            try:
-                with open(self.watched_videos_file, 'r') as f:
-                    data = json.load(f)
-                    return set(data.get('watched', []))
-            except Exception as e:
-                logger.warning(f"Failed to load watched videos from file: {e}")
-        return set()
-    
-    async def _load_watched_videos_from_db(self) -> Set[str]:
-        """Load watched video IDs from database
+    @staticmethod
+    async def load_watched_videos_from_db() -> Set[str]:
+        """Load watched video IDs from database (async static method)
         
         Note: This loads all video IDs into memory for fast O(1) set lookups.
         For very large datasets (10k+ videos), consider lazy loading or caching strategies.
@@ -99,6 +87,23 @@ class YouTubeThread(threading.Thread):
             result = await session.execute(select(WatchedVideoModel.video_id))
             video_ids = result.scalars().all()
             return set(video_ids)
+    
+    @staticmethod
+    def load_watched_videos_from_file(watched_videos_file: str = "data/watched_videos.json") -> Set[str]:
+        """Load watched video IDs from file (static method)"""
+        path = Path(watched_videos_file)
+        if path.exists():
+            try:
+                with open(path, 'r') as f:
+                    data = json.load(f)
+                    return set(data.get('watched', []))
+            except Exception as e:
+                logger.warning(f"Failed to load watched videos from file: {e}")
+        return set()
+    
+    def _load_watched_videos_from_file(self) -> Set[str]:
+        """Load watched video IDs from file (instance method)"""
+        return YouTubeThread.load_watched_videos_from_file(str(self.watched_videos_file))
     
     async def _is_video_watched_in_db(self, video_id: str) -> bool:
         """Check if a single video is watched in database (O(log n) lookup with index)
@@ -112,10 +117,6 @@ class YouTubeThread(threading.Thread):
                 select(exists().where(WatchedVideoModel.video_id == video_id))
             )
             return result.scalar() or False
-    
-    def _load_watched_videos_from_db_sync(self) -> Set[str]:
-        """Sync wrapper for loading watched videos from database"""
-        return run_async(self._load_watched_videos_from_db())
     
     def _save_watched_videos(self):
         """Save watched video IDs to database, fallback to file"""
@@ -380,8 +381,14 @@ class YouTubeThread(threading.Thread):
         if video:
             self._play_video(video)
     
-    def _play_video(self, video: dict):
-        """Play a video using mpv"""
+    def _play_video(self, video: dict, skip_on_error: bool = True):
+        """Play a video using mpv
+        
+        Args:
+            video: Video dict with 'id', 'title', 'url' keys
+            skip_on_error: If True, automatically skip to next video on errors like
+                           scheduled live events that haven't started yet
+        """
         try:
             # Stop any existing playback
             self._stop_playback()
@@ -410,12 +417,13 @@ class YouTubeThread(threading.Thread):
             self.mpv_ipc_socket = f"/tmp/{socket_name}"
             
             # Play with mpv (no video, audio only, with IPC socket)
+            # Note: mpv 0.40+ requires = syntax for options with values
             self.current_process = subprocess.Popen(
                 [
                     'mpv',
                     '--no-video',
                     '--really-quiet',
-                    '--input-ipc-server', self.mpv_ipc_socket,
+                    f'--input-ipc-server={self.mpv_ipc_socket}',
                     video_url
                 ],
                 stdout=subprocess.DEVNULL,
@@ -443,10 +451,63 @@ class YouTubeThread(threading.Thread):
             
         except subprocess.TimeoutExpired:
             logger.error("yt-dlp command timed out")
+            if skip_on_error:
+                self._skip_to_next_on_error(video)
         except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to get video URL: {e.stderr}")
+            error_msg = e.stderr.strip() if e.stderr else str(e)
+            
+            # Check if this is a scheduled live event that hasn't started
+            if self._is_scheduled_live_event_error(error_msg):
+                logger.warning(f"Skipping scheduled live event that hasn't started: {video['title']}")
+                if skip_on_error:
+                    self._skip_to_next_on_error(video)
+            else:
+                logger.error(f"Failed to get video URL: {error_msg}")
+                if skip_on_error:
+                    self._skip_to_next_on_error(video)
         except Exception as e:
             logger.error(f"Error playing video: {e}")
+            if skip_on_error:
+                self._skip_to_next_on_error(video)
+    
+    def _is_scheduled_live_event_error(self, error_msg: str) -> bool:
+        """Check if the error is due to a scheduled live event that hasn't started yet"""
+        # Common error patterns for scheduled/upcoming live events
+        scheduled_patterns = [
+            "live event will begin",
+            "Premieres in",
+            "This live stream recording is not available",
+            "is not currently live",
+            "Video unavailable",
+            "This video is private",
+            "Sign in to confirm your age",
+        ]
+        
+        error_lower = error_msg.lower()
+        for pattern in scheduled_patterns:
+            if pattern.lower() in error_lower:
+                return True
+        return False
+    
+    def _skip_to_next_on_error(self, failed_video: dict):
+        """Skip to the next video after an error, avoiding infinite loops"""
+        if not self.current_videos:
+            return
+        
+        # Mark this video as watched so we don't try it again immediately
+        self.watched_videos.add(failed_video['id'])
+        
+        # Move to next video index
+        self.current_video_index = (self.current_video_index + 1) % len(self.current_videos)
+        
+        # Get next unwatched video
+        video = self._get_next_unwatched_video()
+        
+        if video and video['id'] != failed_video['id']:
+            logger.info(f"Skipping to next video after error")
+            self._play_video(video, skip_on_error=True)
+        else:
+            logger.warning("No more videos available to play after error")
     
     def _play_next_video(self):
         """Play next video (called automatically when current finishes)"""

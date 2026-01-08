@@ -10,16 +10,17 @@ logger = logging.getLogger(__name__)
 class YouTubeClient:
     """Client for playing YouTube videos - wraps YouTubeThread"""
     
-    def __init__(self, state: JukeboxState, watched_videos_file: str = "data/watched_videos.json"):
+    def __init__(self, state: JukeboxState, watched_videos: set = None, watched_videos_file: str = "data/watched_videos.json"):
         """
         Initialize YouTube client
         
         Args:
             state: JukeboxState instance for coordination
+            watched_videos: Pre-loaded set of watched video IDs (optional)
             watched_videos_file: Path to JSON file storing watched video IDs
         """
         self.state = state
-        self.youtube_thread = YouTubeThread(state, watched_videos_file)
+        self.youtube_thread = YouTubeThread(state, watched_videos, watched_videos_file)
         logger.info("YouTubeClient initialized")
     
     def start(self):

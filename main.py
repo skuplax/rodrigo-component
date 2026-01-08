@@ -16,9 +16,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 load_dotenv()
 
 from gpio import JukeboxState, GPIOMonitor
-from player import PlayerService
+from player import PlayerService, SourceManager
+from player.youtube_thread import YouTubeThread
 from dashboard.routes import router as dashboard_router
-from db.database import get_db
+from db.database import get_db, set_main_loop
 from db.models import Log, Source, AppState
 
 # Configure logging
@@ -64,24 +65,42 @@ async def lifespan(app: FastAPI):
     global player_service, gpio_monitor
     logger.info("Starting Rodrigo Component...")
     
+    # Register the main event loop for cross-thread database operations
+    # This allows background threads to safely use async database operations
+    set_main_loop(asyncio.get_running_loop())
+    
+    # Load data from database asynchronously before creating services
+    # This avoids the sync-from-async issues during initialization
+    logger.info("Loading sources from database...")
+    source_manager = await SourceManager.create()
+    
+    logger.info("Loading watched videos from database...")
+    try:
+        watched_videos = await YouTubeThread.load_watched_videos_from_db()
+        logger.info(f"Loaded {len(watched_videos)} watched videos from database")
+    except Exception as e:
+        logger.warning(f"Failed to load watched videos from database: {e}, using file fallback")
+        watched_videos = YouTubeThread.load_watched_videos_from_file()
+        logger.info(f"Loaded {len(watched_videos)} watched videos from file")
+    
     # Configure voice model path
     project_root = Path(__file__).parent
     voice_model_path = os.getenv(
         'PIPER_VOICE_MODEL',
         str(project_root / "data" / "piper" / "voices" / "en_US-lessac-medium.onnx")
     )
-    
 
     # Check if voice model exists
     if not Path(voice_model_path).exists():
         logger.warning(f"Voice model not found at {voice_model_path}, announcements will be disabled")
         voice_model_path = None
     
-    # Initialize player service (includes MopidyThread, but not started yet)
-    # Sources default to SourceManager defaults if not provided
+    # Initialize player service with pre-loaded data
     is_dev = is_development_mode()
     player_service = PlayerService(
         jukebox_state,
+        source_manager=source_manager,
+        watched_videos=watched_videos,
         announcement_voice_model=voice_model_path,
         dev_mode=is_dev
     )
