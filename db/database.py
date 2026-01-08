@@ -97,9 +97,10 @@ async_engine = create_async_engine(
     ASYNC_DATABASE_URL,
     echo=False,
     pool_pre_ping=True,
-    pool_size=5,
-    max_overflow=10,
-    pool_recycle=3600,
+    pool_size=2,          # Reduced for Supabase pooler limits
+    max_overflow=3,       # Max 5 total connections
+    pool_recycle=300,     # Recycle every 5 min to prevent stale connections
+    pool_timeout=10,      # Timeout waiting for connection
     connect_args=SSL_ARGS,
 )
 
@@ -132,9 +133,10 @@ sync_engine = create_engine(
     SYNC_DATABASE_URL,
     echo=False,
     pool_pre_ping=True,
-    pool_size=3,
-    max_overflow=5,
-    pool_recycle=3600,
+    pool_size=2,          # Reduced for Supabase pooler limits
+    max_overflow=2,       # Max 4 total connections
+    pool_recycle=300,     # Recycle every 5 min
+    pool_timeout=10,      # Timeout waiting for connection
     connect_args=sync_connect_args,
 )
 

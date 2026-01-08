@@ -20,6 +20,7 @@ from player import PlayerService
 from dashboard.routes import router as dashboard_router
 from db.database import get_db
 from db.models import Log, Source, AppState
+from db.logging_handler import setup_supabase_logging, SupabaseLogHandler
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -27,6 +28,18 @@ logger = logging.getLogger(__name__)
 
 # Set GPIO Monitor logger to WARNING level
 logging.getLogger("gpio").setLevel(logging.WARNING)
+
+# Set up Supabase logging (captures INFO+ logs to database)
+supabase_log_handler: Optional[SupabaseLogHandler] = None
+try:
+    supabase_log_handler = setup_supabase_logging(
+        level=logging.INFO,
+        batch_size=10,
+        flush_interval=5.0
+    )
+    logger.info("Supabase logging enabled")
+except Exception as e:
+    logger.warning(f"Failed to set up Supabase logging: {e}")
 
 # Global state, player service, and monitor
 jukebox_state = JukeboxState()
@@ -116,6 +129,10 @@ async def lifespan(app: FastAPI):
         player_service.stop()
     
     logger.info("Rodrigo Component stopped")
+    
+    # Stop Supabase log handler (flush remaining logs)
+    if supabase_log_handler:
+        supabase_log_handler.stop()
 
 
 app = FastAPI(
@@ -370,93 +387,97 @@ async def cycle_source():
 
 
 @app.get("/api/logs")
-async def get_logs(
-    limit: int = Query(100, ge=1, le=1000),
+def get_logs(
+    limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     level: Optional[str] = Query(None, description="Filter by log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)"),
     module: Optional[str] = Query(None, description="Filter by module name"),
     search: Optional[str] = Query(None, description="Search in message text"),
     start_date: Optional[str] = Query(None, description="Start date (ISO format)"),
     end_date: Optional[str] = Query(None, description="End date (ISO format)"),
-    db: AsyncSession = Depends(get_db)
 ):
-    """Get logs from database with filtering"""
+    """Get logs from database with filtering (sync endpoint - doesn't use connection pool)"""
+    from db.database import get_sync_session
+    
     try:
-        # Build query
-        query = select(Log).order_by(desc(Log.timestamp))
-        
-        # Apply filters
-        conditions = []
-        
-        if level:
-            conditions.append(Log.level == level.upper())
-        
-        if module:
-            conditions.append(or_(
-                Log.module.ilike(f"%{module}%"),
-                Log.logger_name.ilike(f"%{module}%")
-            ))
-        
-        if search:
-            conditions.append(or_(
-                Log.message.ilike(f"%{search}%"),
-                Log.exception_info.ilike(f"%{search}%")
-            ))
-        
-        if start_date:
-            try:
-                start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
-                conditions.append(Log.timestamp >= start_dt)
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid start_date format. Use ISO format.")
-        
-        if end_date:
-            try:
-                end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
-                conditions.append(Log.timestamp <= end_dt)
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid end_date format. Use ISO format.")
-        
-        if conditions:
-            query = query.where(and_(*conditions))
-        
-        # Get total count for pagination
-        count_query = select(func.count()).select_from(Log)
-        if conditions:
-            count_query = count_query.where(and_(*conditions))
-        total_result = await db.execute(count_query)
-        total = total_result.scalar()
-        
-        # Apply pagination
-        query = query.limit(limit).offset(offset)
-        
-        # Execute query
-        result = await db.execute(query)
-        logs = result.scalars().all()
-        
-        # Convert to dict format
-        logs_data = [
-            {
-                "id": str(log.id),
-                "level": log.level,
-                "logger_name": log.logger_name,
-                "message": log.message,
-                "module": log.module,
-                "function": log.function,
-                "line_number": log.line_number,
-                "exception_info": log.exception_info,
-                "timestamp": log.timestamp.isoformat() if log.timestamp else None,
-                "extra_data": log.extra_data
+        with get_sync_session() as session:
+            # Build query
+            query = select(Log).order_by(desc(Log.timestamp))
+            
+            # Apply filters
+            conditions = []
+            
+            if level:
+                conditions.append(Log.level == level.upper())
+            
+            if module:
+                conditions.append(or_(
+                    Log.module.ilike(f"%{module}%"),
+                    Log.logger_name.ilike(f"%{module}%")
+                ))
+            
+            if search:
+                conditions.append(or_(
+                    Log.message.ilike(f"%{search}%"),
+                    Log.exception_info.ilike(f"%{search}%")
+                ))
+            
+            if start_date:
+                try:
+                    start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+                    conditions.append(Log.timestamp >= start_dt)
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Invalid start_date format. Use ISO format.")
+            
+            if end_date:
+                try:
+                    end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+                    conditions.append(Log.timestamp <= end_dt)
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Invalid end_date format. Use ISO format.")
+            
+            if conditions:
+                query = query.where(and_(*conditions))
+            
+            # Get total count for pagination
+            count_query = select(func.count()).select_from(Log)
+            if conditions:
+                count_query = count_query.where(and_(*conditions))
+            total_result = session.execute(count_query)
+            total = total_result.scalar()
+            
+            # Apply pagination
+            query = query.limit(limit).offset(offset)
+            
+            # Execute query
+            result = session.execute(query)
+            logs = result.scalars().all()
+            
+            # Convert to dict format
+            logs_data = [
+                {
+                    "id": str(log.id),
+                    "level": log.level,
+                    "logger_name": log.logger_name,
+                    "message": log.message,
+                    "module": log.module,
+                    "function": log.function,
+                    "line_number": log.line_number,
+                    "exception_info": log.exception_info,
+                    "timestamp": log.timestamp.isoformat() if log.timestamp else None,
+                    "extra_data": log.extra_data
+                }
+                for log in logs
+            ]
+            
+            return {
+                "logs": logs_data,
+                "total": total,
+                "limit": limit,
+                "offset": offset
             }
-            for log in logs
-        ]
-        
-        return {
-            "logs": logs_data,
-            "total": total,
-            "limit": limit,
-            "offset": offset
-        }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching logs: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch logs: {str(e)}")
