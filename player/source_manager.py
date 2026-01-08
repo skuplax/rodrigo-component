@@ -45,6 +45,10 @@ class SourceManager:
         self.sources: List[MediaSource] = sources
         self.current_source_index = current_index
         
+        # Debouncing for database saves - avoids overwhelming connection pool
+        self._pending_save_index: Optional[int] = None
+        self._save_scheduled: bool = False
+        
         # Validate index is within bounds
         if self.current_source_index >= len(self.sources):
             logger.warning(f"Current source index {self.current_source_index} out of bounds, resetting to 0")
@@ -209,11 +213,29 @@ class SourceManager:
             await session.commit()
             logger.debug(f"Saved current_source_index {index} to database")
     
+    async def _debounced_save(self):
+        """Debounced save - waits briefly then saves the latest index"""
+        # Wait a short time to allow rapid changes to coalesce
+        await asyncio.sleep(0.5)
+        
+        # Save the latest pending index
+        if self._pending_save_index is not None:
+            index_to_save = self._pending_save_index
+            self._pending_save_index = None
+            self._save_scheduled = False
+            await self._save_current_index_to_db(index_to_save)
+        else:
+            self._save_scheduled = False
+    
     def _save_current_index_to_db_sync(self, index: int):
-        """Sync wrapper for saving current index to database (fire-and-forget)"""
-        # Use fire_and_forget_async since we don't need to wait for the result
-        # This is safe to call from any context without blocking
-        fire_and_forget_async(self._save_current_index_to_db(index))
+        """Sync wrapper for saving current index to database (debounced fire-and-forget)"""
+        # Update the pending index
+        self._pending_save_index = index
+        
+        # Only schedule a new save if one isn't already pending
+        if not self._save_scheduled:
+            self._save_scheduled = True
+            fire_and_forget_async(self._debounced_save())
     
     def get_current_source(self) -> Optional[MediaSource]:
         """Get current active source"""
