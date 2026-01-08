@@ -416,6 +416,42 @@ async def dashboard():
                 margin-top: 30px;
             }
             
+            .logs-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 16px;
+            }
+            
+            .logs-header h2 {
+                margin: 0;
+                color: #1db954;
+                font-size: 1.2rem;
+                font-weight: 600;
+            }
+            
+            .refresh-logs-button {
+                background: #1db954;
+                color: #121212;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 6px;
+                cursor: pointer;
+                font-weight: 600;
+                font-size: 0.9rem;
+                transition: all 0.2s ease;
+            }
+            
+            .refresh-logs-button:hover {
+                background: #1ed760;
+                transform: translateY(-1px);
+            }
+            
+            .refresh-logs-button:disabled {
+                opacity: 0.6;
+                cursor: not-allowed;
+            }
+            
             .logs-filters {
                 display: grid;
                 grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -750,7 +786,12 @@ async def dashboard():
             </div>
             
             <div class="logs-section">
-                <h2>Logs</h2>
+                <div class="logs-header">
+                    <h2>Logs</h2>
+                    <button class="refresh-logs-button" onclick="loadLogs()" title="Refresh Logs">
+                        🔄 Refresh Logs
+                    </button>
+                </div>
                 <div class="logs-filters">
                     <div class="filter-group">
                         <label for="log-level">Level</label>
@@ -970,7 +1011,6 @@ async def dashboard():
                     }
                 } catch (error) {
                     console.error('Error updating status:', error);
-                    document.getElementById('status').innerHTML = '<span style="color: #e22134;">Error loading status</span>';
                 }
             }
             
@@ -1051,10 +1091,11 @@ async def dashboard():
             
             // Logs functionality
             let logsOffset = 0;
-            const logsLimit = 100;
+            const logsLimit = 50;
             let logsTotal = 0;
             let loadLogsTimeout = null;
             let currentLogsList = []; // Store current logs for modal access
+            let logsLoading = false;
             
             function debounceLoadLogs() {
                 if (loadLogsTimeout) {
@@ -1064,6 +1105,18 @@ async def dashboard():
             }
             
             async function loadLogs() {
+                if (logsLoading) return;
+                logsLoading = true;
+                
+                const refreshBtn = document.querySelector('.refresh-logs-button');
+                const tbody = document.getElementById('logs-table-body');
+                
+                if (refreshBtn) {
+                    refreshBtn.disabled = true;
+                    refreshBtn.textContent = '⏳ Loading...';
+                }
+                tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: #b3b3b3;">Loading logs...</td></tr>';
+                
                 const level = document.getElementById('log-level').value;
                 const module = document.getElementById('log-module').value;
                 const search = document.getElementById('log-search').value;
@@ -1091,7 +1144,6 @@ async def dashboard():
                     logsTotal = data.total;
                     
                     // Update table
-                    const tbody = document.getElementById('logs-table-body');
                     if (data.logs && data.logs.length > 0) {
                         // Store logs for modal access
                         currentLogsList = data.logs;
@@ -1121,8 +1173,14 @@ async def dashboard():
                     updatePagination();
                 } catch (error) {
                     console.error('Error loading logs:', error);
-                    document.getElementById('logs-table-body').innerHTML = 
-                        '<tr><td colspan="4" style="text-align: center; color: #e22134;">Error loading logs</td></tr>';
+                    tbody.innerHTML = 
+                        '<tr><td colspan="4" style="text-align: center; color: #e22134;">Error loading logs - click Refresh to retry</td></tr>';
+                } finally {
+                    logsLoading = false;
+                    if (refreshBtn) {
+                        refreshBtn.disabled = false;
+                        refreshBtn.textContent = '🔄 Refresh Logs';
+                    }
                 }
             }
             
@@ -1235,7 +1293,7 @@ async def dashboard():
             updateStatus();
             setInterval(updateStatus, 2000);
             
-            // Load logs on page load
+            // Load logs on page load (using sync endpoint - safe from connection pool issues)
             loadLogs();
         </script>
     </body>
