@@ -19,6 +19,7 @@ from player import PlayerService
 from dashboard.routes import router as dashboard_router
 from db.models import Log, Source, AppState
 from db.logging_handler import setup_supabase_logging, SupabaseLogHandler
+from audio.volume import get_volume_service, VolumeService
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -305,6 +306,151 @@ async def announce(request: AnnouncementRequest):
     except Exception as e:
         logger.error(f"Error sending announcement: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to send announcement: {str(e)}")
+
+
+# =============================================================================
+# Volume Control Endpoints
+# =============================================================================
+
+class VolumeRequest(BaseModel):
+    """Request model for setting volume"""
+    volume: int  # 0-100
+
+class MaxVolumeLimitRequest(BaseModel):
+    """Request model for setting max volume limit"""
+    limit: int  # 0-100
+
+
+@app.get("/api/volume")
+def get_volume():
+    """Get current volume state including max limit"""
+    volume_service = get_volume_service()
+    
+    if not volume_service.available:
+        raise HTTPException(status_code=503, detail="Volume control not available")
+    
+    state = volume_service.get_state()
+    return {
+        "volume": state.current,
+        "max_limit": state.max_limit,
+        "muted": state.muted,
+        "available": True,
+        "control": state.control_name
+    }
+
+
+@app.post("/api/volume")
+def set_volume(request: VolumeRequest):
+    """Set volume level (respects max limit)"""
+    volume_service = get_volume_service()
+    
+    if not volume_service.available:
+        raise HTTPException(status_code=503, detail="Volume control not available")
+    
+    if not 0 <= request.volume <= 100:
+        raise HTTPException(status_code=400, detail="Volume must be between 0 and 100")
+    
+    # Volume will be clamped to max_limit by the service
+    success = volume_service.set_volume(request.volume)
+    
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to set volume")
+    
+    state = volume_service.get_state()
+    return {
+        "volume": state.current,
+        "max_limit": state.max_limit,
+        "requested": request.volume,
+        "muted": state.muted
+    }
+
+
+@app.post("/api/volume/mute")
+def toggle_mute():
+    """Toggle mute state"""
+    volume_service = get_volume_service()
+    
+    if not volume_service.available:
+        raise HTTPException(status_code=503, detail="Volume control not available")
+    
+    volume_service.toggle_mute()
+    state = volume_service.get_state()
+    
+    return {
+        "muted": state.muted,
+        "volume": state.current
+    }
+
+
+@app.get("/api/volume/max-limit")
+def get_max_volume_limit():
+    """Get the max volume limit setting"""
+    from db.database import get_sync_session
+    
+    volume_service = get_volume_service()
+    
+    # Try to load from database
+    try:
+        with get_sync_session() as session:
+            result = session.execute(
+                select(AppState).where(AppState.key == 'max_volume_limit')
+            )
+            app_state = result.scalar_one_or_none()
+            
+            if app_state and app_state.value:
+                try:
+                    db_limit = int(app_state.value)
+                    volume_service.max_limit = db_limit
+                except (ValueError, TypeError):
+                    pass
+    except Exception as e:
+        logger.warning(f"Could not load max volume limit from DB: {e}")
+    
+    return {
+        "max_limit": volume_service.max_limit,
+        "current_volume": volume_service.get_volume() or 0
+    }
+
+
+@app.post("/api/volume/max-limit")
+def set_max_volume_limit(request: MaxVolumeLimitRequest):
+    """Set the max volume limit (persisted to database)"""
+    from db.database import get_sync_session
+    
+    if not 0 <= request.limit <= 100:
+        raise HTTPException(status_code=400, detail="Limit must be between 0 and 100")
+    
+    volume_service = get_volume_service()
+    
+    # Save to database
+    try:
+        with get_sync_session() as session:
+            result = session.execute(
+                select(AppState).where(AppState.key == 'max_volume_limit')
+            )
+            app_state = result.scalar_one_or_none()
+            
+            if app_state:
+                app_state.value = str(request.limit)
+            else:
+                new_state = AppState(key='max_volume_limit', value=str(request.limit))
+                session.add(new_state)
+            
+            session.commit()
+            logger.info(f"Max volume limit set to {request.limit}%")
+    except Exception as e:
+        logger.error(f"Failed to save max volume limit: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save setting: {str(e)}")
+    
+    # Apply to volume service (will enforce on current volume)
+    volume_service.max_limit = request.limit
+    
+    state = volume_service.get_state()
+    return {
+        "max_limit": state.max_limit,
+        "current_volume": state.current,
+        "message": f"Max volume limit set to {request.limit}%"
+    }
 
 
 @app.post("/api/player/play-pause")

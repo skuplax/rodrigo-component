@@ -1,10 +1,12 @@
-"""Rotary encoder volume control with proper quadrature decoding"""
+"""Rotary encoder volume control with proper quadrature decoding
+
+Uses the shared VolumeService to ensure max volume limit is respected
+and volume scale matches alsamixer (mapped volume).
+"""
 
 from gpiozero import RotaryEncoder, Button
 import logging
 import time
-import subprocess
-import re
 from threading import Lock
 from typing import Optional
 
@@ -12,7 +14,13 @@ logger = logging.getLogger(__name__)
 
 
 class VolumeControl:
-    """Rotary encoder volume control with throttling and proper state management"""
+    """Rotary encoder volume control with throttling and proper state management.
+    
+    Uses VolumeService for volume operations to ensure:
+    - Max volume limit is respected
+    - Mapped volume scale matches alsamixer
+    - Consistent behavior between GPIO and web controls
+    """
     
     def __init__(
         self, 
@@ -40,12 +48,21 @@ class VolumeControl:
         self.alsa_control = alsa_control
         self.volume_per_step = max(1, min(10, volume_per_step))  # Clamp to 1-10
         self.current_volume = 50  # Track current volume
-        self.saved_volume = 50  # For mute/unmute
         self.volume_lock = Lock()
         self.last_volume_update = 0
         self.update_throttle_ms = update_throttle_ms
         self.encoder = None
         self.button = None
+        self.volume_service = None
+        
+        # Initialize VolumeService for volume operations
+        try:
+            from audio.volume import get_volume_service
+            self.volume_service = get_volume_service()
+            logger.info("GPIO VolumeControl using shared VolumeService")
+        except Exception as e:
+            logger.warning(f"Could not initialize VolumeService: {e}")
+            logger.warning("GPIO volume control will operate without max limit enforcement")
         
         try:
             # gpiozero RotaryEncoder handles quadrature decoding automatically
@@ -87,104 +104,137 @@ class VolumeControl:
         self._adjust_volume(-self.volume_per_step)
     
     def _adjust_volume(self, delta: int):
-        """Adjust volume by delta amount with throttling"""
+        """Adjust volume by delta amount with throttling.
+        
+        Uses VolumeService which:
+        - Respects the max volume limit
+        - Uses mapped volume scale (matches alsamixer)
+        """
         # Throttle updates to prevent overwhelming the system
         current_time = time.time() * 1000  # milliseconds
         if current_time - self.last_volume_update < self.update_throttle_ms:
             return
         
         with self.volume_lock:
-            new_volume = max(0, min(100, self.current_volume + delta))
+            self.last_volume_update = current_time
             
-            if new_volume != self.current_volume:
-                self.current_volume = new_volume
-                self.last_volume_update = current_time
+            if self.volume_service:
+                # Use VolumeService for volume operations (respects max limit)
+                if delta > 0:
+                    new_volume = self.volume_service.volume_up(abs(delta))
+                else:
+                    new_volume = self.volume_service.volume_down(abs(delta))
                 
-                # Set ALSA PCM volume directly
-                self._set_alsa_volume(new_volume)
-                logger.debug(f"ALSA {self.alsa_control} volume changed to {new_volume}% (delta: {delta:+d})")
+                self.current_volume = new_volume
+                logger.debug(f"Volume changed to {new_volume}% (delta: {delta:+d}, max_limit: {self.volume_service.max_limit}%)")
+            else:
+                # Fallback: direct ALSA control without limit enforcement
+                new_volume = max(0, min(100, self.current_volume + delta))
+                if new_volume != self.current_volume:
+                    self.current_volume = new_volume
+                    self._set_alsa_volume_direct(new_volume)
+                    logger.debug(f"ALSA {self.alsa_control} volume changed to {new_volume}% (delta: {delta:+d})")
     
     def _on_button_press(self):
         """Handle button press (mute/unmute)"""
-        # Get current ALSA volume
-        current = self._get_alsa_volume()
-        if current is None:
-            current = self.current_volume
-            
-        if current > 0:
-            # Mute: save current volume and set to 0
-            self.saved_volume = current
-            self._set_alsa_volume(0)
-            self._set_alsa_mute(True)
-            logger.info(f"ALSA {self.alsa_control} muted (was {current}%)")
+        if self.volume_service:
+            # Use VolumeService for mute toggle
+            self.volume_service.toggle_mute()
+            # Sync our tracked volume
+            new_volume = self.volume_service.get_volume()
+            if new_volume is not None:
+                with self.volume_lock:
+                    self.current_volume = new_volume
+            logger.info(f"Volume mute toggled via VolumeService")
         else:
-            # Unmute: restore saved volume
-            restored = self.saved_volume if self.saved_volume > 0 else 50
-            self._set_alsa_mute(False)
-            self._set_alsa_volume(restored)
-            # Update tracked volume
-            with self.volume_lock:
-                self.current_volume = restored
-            logger.info(f"ALSA {self.alsa_control} unmuted to {restored}%")
+            # Fallback: direct ALSA mute control
+            current = self._get_alsa_volume_direct()
+            if current is None:
+                current = self.current_volume
+                
+            if current > 0:
+                # Mute: save current volume and set to 0
+                self._saved_volume = current
+                self._set_alsa_volume_direct(0)
+                self._set_alsa_mute_direct(True)
+                logger.info(f"ALSA {self.alsa_control} muted (was {current}%)")
+            else:
+                # Unmute: restore saved volume
+                restored = getattr(self, '_saved_volume', 50)
+                if restored <= 0:
+                    restored = 50
+                self._set_alsa_mute_direct(False)
+                self._set_alsa_volume_direct(restored)
+                with self.volume_lock:
+                    self.current_volume = restored
+                logger.info(f"ALSA {self.alsa_control} unmuted to {restored}%")
     
-    def _get_alsa_volume(self) -> Optional[int]:
-        """Get current ALSA volume percentage"""
+    def _get_alsa_volume_direct(self) -> Optional[int]:
+        """Get current ALSA volume percentage (direct, fallback only)"""
+        import subprocess
+        import re
         try:
             result = subprocess.run(
-                ['amixer', 'get', self.alsa_control],
+                ['amixer', '-M', 'get', self.alsa_control],
                 capture_output=True,
                 text=True,
                 check=True,
                 timeout=1.0
             )
             # Parse output to extract volume percentage
-            # Example: "Mono: Playback 0 [96%] [0.00dB] [on]"
             match = re.search(r'\[(\d+)%\]', result.stdout)
             if match:
                 return int(match.group(1))
             return None
-        except (subprocess.TimeoutExpired, subprocess.CalledProcessError, ValueError) as e:
+        except Exception as e:
             logger.debug(f"Error getting ALSA volume: {e}")
             return None
     
-    def _set_alsa_volume(self, volume_percent: int):
-        """Set ALSA volume percentage (0-100)"""
+    def _set_alsa_volume_direct(self, volume_percent: int):
+        """Set ALSA volume percentage (direct, fallback only)"""
+        import subprocess
         try:
             subprocess.run(
-                ['amixer', 'set', self.alsa_control, f'{volume_percent}%'],
+                ['amixer', '-M', 'set', self.alsa_control, f'{volume_percent}%'],
                 check=True,
                 timeout=1.0,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
             )
-        except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
+        except Exception as e:
             logger.warning(f"Error setting ALSA volume: {e}")
     
-    def _set_alsa_mute(self, mute: bool):
-        """Set ALSA mute state"""
+    def _set_alsa_mute_direct(self, mute: bool):
+        """Set ALSA mute state (direct, fallback only)"""
+        import subprocess
         try:
             state = 'mute' if mute else 'unmute'
             subprocess.run(
-                ['amixer', 'set', self.alsa_control, state],
+                ['amixer', '-M', 'set', self.alsa_control, state],
                 check=True,
                 timeout=1.0,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
             )
-        except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
+        except Exception as e:
             logger.warning(f"Error setting ALSA mute: {e}")
     
     def sync_volume(self):
         """Sync tracked volume with current ALSA volume"""
         if not self.encoder:
             return
-            
-        current = self._get_alsa_volume()
+        
+        if self.volume_service:
+            # Get volume from VolumeService
+            current = self.volume_service.get_volume()
+        else:
+            # Fallback to direct ALSA query
+            current = self._get_alsa_volume_direct()
+        
         if current is not None and current >= 0:
             with self.volume_lock:
-                # Just update our tracked volume, don't modify encoder.steps
                 self.current_volume = current
-                logger.debug(f"Volume encoder synced to ALSA {self.alsa_control} {current}%")
+                logger.debug(f"Volume encoder synced to {current}%")
     
     def close(self):
         """Cleanup resources"""
@@ -201,5 +251,3 @@ class VolumeControl:
                 logger.info("Volume encoder button closed")
             except Exception as e:
                 logger.error(f"Error closing encoder button: {e}")
-
-

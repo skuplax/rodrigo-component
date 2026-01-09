@@ -408,6 +408,208 @@ async def dashboard():
                 pointer-events: none;
             }
             
+            /* Volume Control Section */
+            .volume-section {
+                background: linear-gradient(135deg, #1e1e1e 0%, #252525 100%);
+                border-radius: 12px;
+                padding: 24px;
+                box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+                margin-top: 30px;
+            }
+            
+            .volume-section h2 {
+                color: #1db954;
+                margin: 0 0 20px 0;
+                font-size: 1.2rem;
+                font-weight: 600;
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }
+            
+            .volume-controls {
+                display: flex;
+                flex-direction: column;
+                gap: 24px;
+            }
+            
+            .volume-control-row {
+                display: flex;
+                align-items: center;
+                gap: 16px;
+            }
+            
+            .volume-icon {
+                font-size: 1.5rem;
+                min-width: 40px;
+                text-align: center;
+                cursor: pointer;
+                transition: transform 0.2s ease;
+            }
+            
+            .volume-icon:hover {
+                transform: scale(1.1);
+            }
+            
+            .volume-slider-container {
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+                gap: 6px;
+            }
+            
+            .volume-slider-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+            
+            .volume-label {
+                font-size: 0.9rem;
+                color: #b3b3b3;
+                font-weight: 500;
+            }
+            
+            .volume-value {
+                font-size: 0.9rem;
+                color: #1db954;
+                font-weight: 600;
+                min-width: 45px;
+                text-align: right;
+            }
+            
+            /* Volume slider track wrapper for hard stop effect */
+            .volume-slider-track {
+                position: relative;
+                width: 100%;
+                height: 8px;
+                border-radius: 4px;
+                background: #404040;
+            }
+            
+            /* Blocked zone (beyond max limit) */
+            .volume-blocked-zone {
+                position: absolute;
+                right: 0;
+                top: 0;
+                height: 100%;
+                background: repeating-linear-gradient(
+                    -45deg,
+                    #3a3a3a,
+                    #3a3a3a 2px,
+                    #2a2a2a 2px,
+                    #2a2a2a 4px
+                );
+                border-radius: 0 4px 4px 0;
+                pointer-events: none;
+                z-index: 1;
+                border-left: 2px solid #ff6b35;
+            }
+            
+            /* Hard stop line at max limit */
+            .volume-hard-stop {
+                position: absolute;
+                top: 50%;
+                transform: translateY(-50%);
+                width: 3px;
+                height: 20px;
+                background: linear-gradient(to bottom, #ff6b35, #ff4500);
+                border-radius: 2px;
+                box-shadow: 0 0 8px rgba(255, 107, 53, 0.8);
+                pointer-events: none;
+                z-index: 3;
+            }
+            
+            .volume-slider {
+                -webkit-appearance: none;
+                appearance: none;
+                width: 100%;
+                height: 8px;
+                border-radius: 4px;
+                background: transparent;
+                outline: none;
+                cursor: pointer;
+                position: absolute;
+                top: 0;
+                left: 0;
+                z-index: 2;
+                margin: 0;
+            }
+            
+            .volume-slider::-webkit-slider-thumb {
+                -webkit-appearance: none;
+                appearance: none;
+                width: 20px;
+                height: 20px;
+                border-radius: 50%;
+                background: #1db954;
+                cursor: pointer;
+                box-shadow: 0 2px 8px rgba(29, 185, 84, 0.4);
+                transition: all 0.2s ease;
+            }
+            
+            .volume-slider::-webkit-slider-thumb:hover {
+                transform: scale(1.1);
+                background: #1ed760;
+            }
+            
+            .volume-slider::-moz-range-thumb {
+                width: 20px;
+                height: 20px;
+                border-radius: 50%;
+                background: #1db954;
+                cursor: pointer;
+                border: none;
+                box-shadow: 0 2px 8px rgba(29, 185, 84, 0.4);
+            }
+            
+            .volume-slider.max-limit-slider {
+                position: relative;
+                background: linear-gradient(90deg, #ff6b35 0%, #f7931e 100%);
+            }
+            
+            .volume-slider.max-limit-slider::-webkit-slider-thumb {
+                background: #ff6b35;
+                box-shadow: 0 2px 8px rgba(255, 107, 53, 0.4);
+            }
+            
+            .volume-slider.max-limit-slider::-moz-range-thumb {
+                background: #ff6b35;
+            }
+            
+            .volume-slider.max-limit-slider::-webkit-slider-runnable-track {
+                height: 8px;
+                border-radius: 4px;
+                background: linear-gradient(90deg, #ff6b35 0%, #f7931e 100%);
+            }
+            
+            .volume-slider.max-limit-slider::-moz-range-track {
+                height: 8px;
+                border-radius: 4px;
+                background: linear-gradient(90deg, #ff6b35 0%, #f7931e 100%);
+            }
+            
+            .volume-muted {
+                opacity: 0.5;
+            }
+            
+            .volume-muted .volume-slider::-webkit-slider-thumb {
+                background: #666;
+            }
+            
+            .volume-unavailable {
+                color: #666;
+                font-style: italic;
+                padding: 20px;
+                text-align: center;
+            }
+            
+            .volume-divider {
+                height: 1px;
+                background: linear-gradient(90deg, transparent, #404040, transparent);
+                margin: 8px 0;
+            }
+            
             .logs-section {
                 background: #1e1e1e;
                 border-radius: 12px;
@@ -785,6 +987,47 @@ async def dashboard():
                 </div>
             </div>
             
+            <div class="volume-section" id="volume-section">
+                <h2>🔊 Volume Control</h2>
+                <div class="volume-controls" id="volume-controls">
+                    <!-- Current Volume -->
+                    <div class="volume-control-row" id="volume-main-row">
+                        <span class="volume-icon" id="volume-mute-btn" onclick="toggleMute()" title="Toggle Mute">🔊</span>
+                        <div class="volume-slider-container">
+                            <div class="volume-slider-header">
+                                <span class="volume-label">Volume</span>
+                                <span class="volume-value" id="volume-value">--</span>
+                            </div>
+                            <div class="volume-slider-track" id="volume-track">
+                                <div class="volume-blocked-zone" id="volume-blocked-zone"></div>
+                                <div class="volume-hard-stop" id="volume-hard-stop"></div>
+                                <input type="range" class="volume-slider" id="volume-slider" 
+                                       min="0" max="100" value="50"
+                                       oninput="onVolumeChange(this.value)"
+                                       onchange="setVolume(this.value)">
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="volume-divider"></div>
+                    
+                    <!-- Max Volume Limit -->
+                    <div class="volume-control-row">
+                        <span class="volume-icon" title="Maximum Volume Limit">⚠️</span>
+                        <div class="volume-slider-container">
+                            <div class="volume-slider-header">
+                                <span class="volume-label">Max Volume Limit</span>
+                                <span class="volume-value" id="max-limit-value">--</span>
+                            </div>
+                            <input type="range" class="volume-slider max-limit-slider" id="max-limit-slider" 
+                                   min="0" max="100" value="100"
+                                   oninput="onMaxLimitChange(this.value)"
+                                   onchange="setMaxVolumeLimit(this.value)">
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
             <div class="logs-section">
                 <div class="logs-header">
                     <h2>Logs</h2>
@@ -1089,6 +1332,174 @@ async def dashboard():
                 }
             }
             
+            // ===========================================
+            // Volume Control Functions
+            // ===========================================
+            let volumeState = { volume: 0, max_limit: 100, muted: false, available: false };
+            let volumeUpdateTimeout = null;
+            
+            async function loadVolumeState() {
+                try {
+                    const response = await fetch(`${API_BASE}/api/volume`);
+                    if (!response.ok) {
+                        throw new Error('Volume not available');
+                    }
+                    
+                    volumeState = await response.json();
+                    updateVolumeUI();
+                } catch (error) {
+                    console.log('Volume control not available:', error.message);
+                    document.getElementById('volume-controls').innerHTML = 
+                        '<div class="volume-unavailable">Volume control not available on this device</div>';
+                }
+            }
+            
+            function updateVolumeUI() {
+                const slider = document.getElementById('volume-slider');
+                const valueDisplay = document.getElementById('volume-value');
+                const maxLimitSlider = document.getElementById('max-limit-slider');
+                const maxLimitValue = document.getElementById('max-limit-value');
+                const blockedZone = document.getElementById('volume-blocked-zone');
+                const hardStop = document.getElementById('volume-hard-stop');
+                const muteBtn = document.getElementById('volume-mute-btn');
+                const mainRow = document.getElementById('volume-main-row');
+                
+                if (!slider || !valueDisplay) return;
+                
+                // Update volume slider (always 0-100, clamped to max in backend)
+                slider.value = volumeState.volume;
+                slider.max = 100; // Keep full range, visual hard stop handles limiting
+                valueDisplay.textContent = volumeState.volume + '%';
+                
+                // Update max limit slider
+                maxLimitSlider.value = volumeState.max_limit;
+                maxLimitValue.textContent = volumeState.max_limit + '%';
+                
+                // Update visual hard stop and blocked zone
+                const maxLimitPercent = volumeState.max_limit;
+                if (maxLimitPercent < 100) {
+                    // Show blocked zone (area beyond max limit)
+                    blockedZone.style.width = (100 - maxLimitPercent) + '%';
+                    blockedZone.style.display = 'block';
+                    // Position hard stop line at the limit
+                    hardStop.style.left = 'calc(' + maxLimitPercent + '% - 1px)';
+                    hardStop.style.display = 'block';
+                } else {
+                    // No limit, hide visual indicators
+                    blockedZone.style.display = 'none';
+                    hardStop.style.display = 'none';
+                }
+                
+                // Update mute state
+                if (volumeState.muted) {
+                    muteBtn.textContent = '🔇';
+                    muteBtn.title = 'Unmute';
+                    mainRow.classList.add('volume-muted');
+                } else {
+                    muteBtn.textContent = volumeState.volume === 0 ? '🔈' : 
+                                          volumeState.volume < 50 ? '🔉' : '🔊';
+                    muteBtn.title = 'Mute';
+                    mainRow.classList.remove('volume-muted');
+                }
+            }
+            
+            function onVolumeChange(value) {
+                // Clamp value to max limit for display
+                const clampedValue = Math.min(parseInt(value), volumeState.max_limit);
+                
+                // Immediate UI feedback
+                document.getElementById('volume-value').textContent = clampedValue + '%';
+                
+                // Snap slider to max if trying to go beyond
+                if (parseInt(value) > volumeState.max_limit) {
+                    document.getElementById('volume-slider').value = volumeState.max_limit;
+                }
+                
+                // Update mute icon based on value
+                const muteBtn = document.getElementById('volume-mute-btn');
+                if (!volumeState.muted) {
+                    muteBtn.textContent = clampedValue == 0 ? '🔈' : clampedValue < 50 ? '🔉' : '🔊';
+                }
+            }
+            
+            async function setVolume(value) {
+                // Debounce to prevent too many API calls
+                if (volumeUpdateTimeout) {
+                    clearTimeout(volumeUpdateTimeout);
+                }
+                
+                volumeUpdateTimeout = setTimeout(async () => {
+                    try {
+                        const response = await fetch(`${API_BASE}/api/volume`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ volume: parseInt(value) })
+                        });
+                        
+                        if (response.ok) {
+                            const data = await response.json();
+                            volumeState.volume = data.volume;
+                            volumeState.muted = data.muted;
+                            updateVolumeUI();
+                        }
+                    } catch (error) {
+                        console.error('Error setting volume:', error);
+                    }
+                }, 100);
+            }
+            
+            async function toggleMute() {
+                try {
+                    const response = await fetch(`${API_BASE}/api/volume/mute`, {
+                        method: 'POST'
+                    });
+                    
+                    if (response.ok) {
+                        const data = await response.json();
+                        volumeState.muted = data.muted;
+                        volumeState.volume = data.volume;
+                        updateVolumeUI();
+                    }
+                } catch (error) {
+                    console.error('Error toggling mute:', error);
+                }
+            }
+            
+            function onMaxLimitChange(value) {
+                // Immediate UI feedback
+                document.getElementById('max-limit-value').textContent = value + '%';
+                document.getElementById('max-limit-line').style.left = value + '%';
+                
+                // Update volume slider max
+                const volumeSlider = document.getElementById('volume-slider');
+                volumeSlider.max = value;
+                
+                // If current volume exceeds new limit, update display
+                if (parseInt(volumeSlider.value) > parseInt(value)) {
+                    volumeSlider.value = value;
+                    document.getElementById('volume-value').textContent = value + '%';
+                }
+            }
+            
+            async function setMaxVolumeLimit(value) {
+                try {
+                    const response = await fetch(`${API_BASE}/api/volume/max-limit`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ limit: parseInt(value) })
+                    });
+                    
+                    if (response.ok) {
+                        const data = await response.json();
+                        volumeState.max_limit = data.max_limit;
+                        volumeState.volume = data.current_volume;
+                        updateVolumeUI();
+                    }
+                } catch (error) {
+                    console.error('Error setting max volume limit:', error);
+                }
+            }
+            
             // Logs functionality
             let logsOffset = 0;
             const logsLimit = 50;
@@ -1292,6 +1703,9 @@ async def dashboard():
             // Update every 2 seconds
             updateStatus();
             setInterval(updateStatus, 2000);
+            
+            // Load volume state
+            loadVolumeState();
             
             // Load logs on page load (using sync endpoint - safe from connection pool issues)
             loadLogs();
